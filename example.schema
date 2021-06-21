@@ -1,0 +1,10 @@
+enum Color:byte { white, black, random }
+
+table LoginRequest {
+    username:string = "User";
+    password:[uint8];
+    salt:[uint8:16];
+    a_color:Color;
+    b_color:Color = 2;
+    admin:bool = false;
+}
