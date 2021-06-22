@@ -307,6 +307,14 @@ class StructMember:
             return "{}{}*{}".format(self.type.c_name, separator, self.name)
 
     @property
+    def type_name_const(self):
+        type_name = self.type_name
+        if '*' in type_name:
+            return 'const {}'.format(type_name)
+        else:
+            return type_name
+
+    @property
     def type_name(self):
         if self.type.c_name.endswith('*'):
             separator = ""
@@ -326,7 +334,7 @@ class StructMember:
 
     def generate_signatures(self, parent):
         return "\n".join((
-            "void {struct}_set_{field}({struct}_t *s, {field_type});".format(struct=parent.name, field=self.name, field_type=self.type_name),
+            "void {struct}_set_{field}({struct}_t *s, {field_type});".format(struct=parent.name, field=self.name, field_type=self.type_name_const),
             "void {struct}_get_{field}({struct}_t *s, {field_type});".format(struct=parent.name, field=self.name, field_type=self.type_name_pointer)
         ))
 
@@ -365,7 +373,7 @@ class StructDefinition:
 
     @property
     def c_name(self):
-        return "{}_t".format(self.name)
+        return "{}_t *".format(self.name)
 
     def resolve_types(self, schema):
         for struct_member in self.members:
