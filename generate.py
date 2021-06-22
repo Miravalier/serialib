@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+from os import name
+
 import sys
 import textwrap
 
@@ -20,7 +23,7 @@ def indent(s, amount=2):
 
 
 def dedent(s):
-    return textwrap.dedent(s.rstrip())
+    return textwrap.dedent(s.rstrip()).lstrip()
 
 
 
@@ -217,6 +220,10 @@ class Primitive:
     bit_width: Optional[int] = None
     signed: Optional[bool] = None
 
+    @property
+    def name(self):
+        return self.c_name
+
     def __hash__(self):
         return hash(id(self))
 
@@ -329,14 +336,113 @@ class StructMember:
         else:
             return "{}{}{}".format(self.type.c_name, separator, self.name)
 
-    def generate_typedefs(self):
+    def generate_typedef_field(self):
         return "{};".format(self.type_name)
 
+    def generate_typedef_present(self):
+        return "bool {}_present;".format(self.name)
+
     def generate_signatures(self, parent):
-        return "\n".join((
-            "bool {struct}_set_{field}({struct}_t *s, {field_type});".format(struct=parent.name, field=self.name, field_type=self.type_name_const),
-            "bool {struct}_get_{field}({struct}_t *s, {field_type});".format(struct=parent.name, field=self.name, field_type=self.type_name_pointer)
-        ))
+        return dedent("""
+            bool {struct}_set_{field}({struct}_t *s, {const_field_type});
+            bool {struct}_get_{field}({struct}_t *s, {pointer_field_type});
+        """).format(
+            struct=parent.name,
+            field=self.name,
+            pointer_field_type=self.type_name_pointer,
+            const_field_type=self.type_name_const
+        )
+
+    def generate_free(self):
+        if isinstance(self.type, (TableDefinition, StructDefinition)):
+            return indent(dedent("""
+                if (s->{name}_present) {{
+                    {type_name}_free(s->{name});
+                }}
+            """).format(
+                type_name=self.type.name,
+                name=self.name
+            ) + "\n")
+        elif self.vector:
+            return indent(dedent("""
+                if (s->{name}_present) {{
+                    free(s->{name});
+                }}
+            """).format(
+                name=self.name
+            ) + "\n")
+        else:
+            return ""
+
+    def generate_member_sets(self, parent: Union[StructDefinition, TableDefinition]):
+        return indent(dedent("""
+            if (s->{name}_present) {{
+                {parent_name}_set_{name}(new_s, s->{name});
+            }}
+        """).format(
+            name=self.name,
+            parent_name=parent.name
+        ) + "\n")
+
+    def generate_get_set(self, parent: Union[StructDefinition, TableDefinition]):
+        params = {
+            "parent_name": parent.name,
+            "name": self.name,
+            "type_name_const": self.type_name_const,
+            "type_name_pointer": self.type_name_pointer,
+            "type_name": self.type.name,
+            "vector_size": self.vector_size,
+            "default": self.default,
+        }
+
+        set_implementation = ""
+        set_signature = "bool {parent_name}_set_{name}({parent_name}_t *s, {type_name_const}) {{".format(**params)
+
+        if isinstance(self.type, (TableDefinition, StructDefinition)):  
+            set_implementation += "s->{name} = {type_name}_copy({name});\n".format(**params)
+        elif self.vector:
+            if self.vector_size is not None:
+                # TODO
+                # //s->{name} = malloc(sizeof({type_name}) * {name}_length);
+                # //if (s->{name} == NULL) {{
+                # //  return false;
+                # //}}
+                set_implementation += "memcpy(s->{name}, {name}, sizeof({type_name}) * {vector_size});".format(**params)
+            else:
+                set_signature = "bool {parent_name}_set_{name}({parent_name}_t *s, {type_name_const}, size_t {name}_length) {{".format(**params)
+                set_implementation += "s->{name} = malloc(sizeof({type_name}) * {name}_length);".format(**params)
+                set_implementation += "\n    "
+                set_implementation += "memcpy(s->{name}, {name}, sizeof({type_name}) * {name}_length);".format(**params)
+            
+        elif self.vector and self.vector_size is None:
+            set_implementation += "s->{name} = {type_name}_copy({name});".format(**params)
+        else:
+            set_implementation += "s->{name} = {name};".format(**params)
+
+        params["set_implementation"] = set_implementation
+        params["set_signature"] = set_signature
+        
+        return dedent("""
+            {set_signature}
+                s->{name}_present = true;
+                {set_implementation}
+                return true;
+            }}
+
+            bool {parent_name}_get_{name}({parent_name}_t *s, {type_name_pointer}) {{
+                if (s->{name}_present) {{
+                    *{name} = s->{name};
+                    return true;
+                }}
+                else if ({default}) {{
+                    *{name} = {default};
+                    return true;
+                }}
+                else {{
+                    return false;
+                }}
+            }}
+        """).format(**params)
 
     def generate_c_source(self):
         return ""
@@ -414,23 +520,62 @@ class StructDefinition:
         return dedent("""
             typedef struct {name}_t {{
                 {members}
+                {present}
             }} {name}_t;
-        """).format(name=self.name, members=indent(
-            "\n".join(m.generate_typedefs() for m in self.members)
-        ))
+        """).format(
+            name=self.name,
+            members=indent(
+                "\n".join(m.generate_typedef_field() for m in self.members)
+            ),
+            present=indent(
+                "\n".join(m.generate_typedef_present() for m in self.members)
+            )
+        )
 
     def generate_signatures(self):
         return (
             "{name}_t *{name}_new(void);\n".format(name=self.name) +
             "void {name}_free({name}_t *s);\n".format(name=self.name) +
-            "bool {name}_serialize({name}_t *s uint8_t **buffer, size_t *buffer_size);\n".format(name=self.name) +
+            "bool {name}_serialize({name}_t *s, uint8_t **buffer, size_t *buffer_size);\n".format(name=self.name) +
             "{name}_t *{name}_deserialize(const uint8_t *buffer, size_t buffer_size);\n".format(name=self.name) +
             "bool {name}_verify(const uint8_t *buffer, size_t buffer_size);\n".format(name=self.name) +
             "\n".join(m.generate_signatures(self) for m in self.members)
         )
 
     def generate_c_source(self):
-        return ""
+        return dedent("""
+            static {name}_t *{name}_copy({name}_t *s) {{
+                {name}_t *new_s = {name}_new();
+                {member_sets}return new_s;
+            }}
+
+            {name}_t *{name}_new(void) {{
+                return calloc(1, sizeof({name}_t));
+            }}
+
+            void {name}_free({name}_t *s) {{
+                {frees}free(s);
+            }}
+            
+            bool {name}_serialize({name}_t *s, uint8_t **buffer, size_t *buffer_size) {{
+
+            }}
+
+            {name}_t *{name}_deserialize(const uint8_t *buffer, size_t buffer_size) {{
+
+            }}
+
+            bool {name}_verify(const uint8_t *buffer, size_t buffer_size) {{
+
+            }}
+
+            {get_set}
+        """).format(
+            frees="".join(m.generate_free() for m in self.members),
+            get_set="\n".join(m.generate_get_set(self) for m in self.members),
+            member_sets="".join(m.generate_member_sets(self) for m in self.members),
+            name=self.name
+        )
 
     def generate_python(self):
         return ""
@@ -498,8 +643,9 @@ class Schema:
             "#ifndef _SERIALIB_{}_H\n".format(self.name) +
             "#define _SERIALIB_{}_H\n".format(self.name) +
             "\n" +
-            "#include <stdint.h>\n" +
+            "#include <stdint.h>\n"  +
             "#include <stdbool.h>\n" +
+            "#include <stdlib.h>\n"  +
             "\n" +
             "typedef enum TableType_e {\n" +
             "    TABLE_TYPE_INVALID = 0,\n    " +
@@ -507,8 +653,8 @@ class Schema:
                 "TABLE_TYPE_{} = {}".format(d.name, i := i+1)
                 for d in self.structs
             )) +
-            "\n} TableType_e;\n" +
-            "\n".join(d.generate_typedefs() for d in self.structs) +
+            "\n} TableType_e;\n\n" +
+            "\n\n".join(d.generate_typedefs() for d in self.definitions.values()) +
             "\n\n" +
             "TableType_e {}_table_type(const uint8_t *buffer, size_t buffer_size);\n".format(
                 self.name.lower()
@@ -517,8 +663,12 @@ class Schema:
             "#endif\n"
         )
 
-    def generate_c_source(self):
-        return "\n".join(d.generate_c_source() for d in self.definitions.values())
+    def generate_c_source(self, header_path):
+        return (
+            "#include <stdlib.h>\n" +
+            "#include \"{}\"\n\n".format(header_path) +
+            "\n\n".join(d.generate_c_source() for d in self.structs)
+        )
 
     def generate_python(self):
         return "\n".join(d.generate_python() for d in self.definitions.values())
@@ -528,9 +678,9 @@ def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('schema', type=Path)
-    parser.add_argument('--python', type=str, default=None)
-    parser.add_argument('--c-source', type=str, default=None)
-    parser.add_argument('--c-header', type=str, default=None)
+    parser.add_argument('--python', type=Path, default=None)
+    parser.add_argument('--c-source', type=Path, default=None)
+    parser.add_argument('--c-header', type=Path, default=None)
     args = parser.parse_args()
 
     # Read schema file
@@ -539,8 +689,8 @@ def main():
 
     # Lex and parse schema
     lexer = SeriaLexer()
-    parser = SeriaParser()
-    schema = parser.parse(lexer.tokenize(text_schema))
+    seria_parser = SeriaParser()
+    schema: Schema = seria_parser.parse(lexer.tokenize(text_schema))
     if not schema:
         print("error: invalid schema file", file=sys.stderr)
         return 1
@@ -560,7 +710,9 @@ def main():
             f.write(python_lib)
 
     if args.c_source:
-        c_source = schema.generate_c_source()
+        if not args.c_header:
+            parser.error("Cannot specify --c-source without --c-header")
+        c_source = schema.generate_c_source(args.c_header.name)
         with open(args.c_source, "w") as f:
             f.write(c_source)
 
