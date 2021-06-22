@@ -1,0 +1,250 @@
+// Data types
+
+enum Color:byte { WHITE, BLACK, RANDOM }
+enum FriendRequestStatus:byte { ACCEPTED, PENDING }
+enum GameResult:byte { WHITE, BLACK, DRAW, INSUFFICIENT_MATERIAL, STALEMATE, REPETITION, FIFTY_MOVE }
+
+// Client -> Server
+
+table LoginRequest {
+    username:string;
+    password:[uint8];
+}
+
+table RegisterRequest {
+    username:string;
+    password:[uint8];
+}
+
+table UserLookupRequest {
+    session_token:[uint8];
+    page:uint32;
+    page_size:uint8;
+    elo_range_start:uint16;
+    elo_range_stop:uint16;
+    friends:bool;
+    connection_status:bool;
+    game_status:bool;
+}
+
+table GameInviteRequest {
+    session_token:[uint8];
+    username:string;
+    time_control_sender:uint32;
+    time_increment_sender:uint32;
+    time_control_receiver:uint32;
+    time_increment_receiver:uint32;
+    color:Color;
+}
+
+
+table GameAcceptRequest {
+    session_token:[uint8];
+    accepted_status:bool;
+    game_invite_id:uint32;
+}
+
+table FullGameInformationRequest {
+    session_token:[uint8];
+    game_id:uint32;
+}
+
+table GameMoveRequest {
+    session_token:[uint8];
+    game_id:uint32;
+    move:[uint8];
+}
+
+table GameLastMoveRequest {
+    session_token:[uint8];
+    game_id:uint32;
+}
+
+table GameHeartbeatRequest {
+    session_token:[uint8];
+    game_id:uint32;
+}
+
+table GameDrawOfferRequest {
+    session_token:[uint8];
+    game_id:uint32;
+}
+
+table GameDrawOfferResponse {
+    session_token:[uint8];
+    game_id:uint32;
+    accept:bool;
+}
+
+table GameResignationRequest {
+    session_token:[uint8];
+    game_id:uint32;
+}
+
+table FriendRequest {
+    session_token:[uint8];
+    username:string;
+}
+
+table FriendRequestResponse {
+    session_token:[uint8];
+    accept:bool;
+}
+
+table FriendRequestStatusRequest {
+    session_token:[uint8];
+}
+
+table ActiveGameRequest {
+    session_token:[uint8];
+}
+
+table GameHistoryRequest {
+    username:string;
+    session_token:[uint8];
+}
+
+table PastGameFullInformationRequest {
+    session_token:[uint8];
+    game_id:uint32;
+}
+
+// Client <- Server
+
+table LoginReply {
+    session_token:[uint8];
+    failure:bool;
+    elo:uint16;
+}
+
+table RegisterReply {
+    session_token:[uint8];
+    failure:bool;
+}
+
+table UserLookupReply {
+    players_matched:uint64;
+}
+
+table UserLookupMatch {
+    username:string;
+    elo:uint16;
+    friends:bool;
+    connection_status:bool;
+    game_status:bool;
+}
+
+table GameInviteReply {
+    pass:bool;
+}
+
+table GameInviteNotification {
+    game_invite_id:uint32;
+    username:string;
+    time_control_sender:uint32;
+    time_increment_sender:uint32;
+    time_control_receiver:uint32;
+    time_increment_receiver:uint32;
+    color:Color;
+}
+
+table GameAcceptNotification {
+    game_id:uint32; 
+}
+
+table FullGameInformationReply {
+    username:string;
+    elo:uint16;
+    time_increment_player:uint32;
+    time_increment_opponent:uint32;
+    time_remaining_player:uint32;
+    time_remaining_opponent:uint32;
+    move_history_size:uint16;
+    move_history:[uint8];
+    color:Color;
+}
+
+table GameMoveReply {
+    legal:bool;
+}
+
+table GameMoveNotification {
+    move:[uint8];
+}
+
+table GameLastMoveReply {
+    move:[uint8];
+    draw_offer:bool;
+}
+
+table GameHeartbeatReply {
+    time_remaining_player:uint32;
+    time_remaining_opponent:uint32;
+}
+
+table GameDrawOfferNotification {
+}
+
+table GameDrawOfferDeclinedNotification {
+}
+
+table GameOverNotification { 
+    winner:string;
+    elo_white:uint16;
+    elo_black:uint16;
+    checkmate:bool;
+    resignation:bool;
+    flag:bool;
+    draw_accepted:bool;
+    insufficient_material:bool;
+    repetition:bool;
+    stalemate:bool;
+    fifty_move:bool;
+}
+
+table FriendRequestNotification {
+    username:string;
+}
+
+table FriendRequestStatusReply {
+    amount:uint64;
+}
+
+table IndividualFriendRequestStatus {
+    username:string;
+    request_status:FriendRequestStatus;
+    elo:uint16;
+    connection_status:bool;
+    game_status:bool;
+}
+
+table ActiveGameReply {
+    game_id:[uint32];
+}
+
+table ErrorReply {
+    error:uint8;
+}
+
+table GameHistoryReply {
+    amount:uint64;
+}
+
+table IndividualGameHistoryReply {
+    white:string;
+    black:string;
+    date:string;
+    game_result:GameResult;
+    game_id:uint32;
+}
+
+table PastGameFullInformationReply {
+    white:string;
+    black:string;
+    time_increment_white:uint32;
+    time_increment_black:uint32;
+    time_remaining_white:uint32;
+    time_remaining_black:uint32;
+    move_history_size:uint16;
+    move_history:[uint8];
+}

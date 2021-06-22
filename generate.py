@@ -334,14 +334,14 @@ class StructMember:
 
     def generate_signatures(self, parent):
         return "\n".join((
-            "void {struct}_set_{field}({struct}_t *s, {field_type});".format(struct=parent.name, field=self.name, field_type=self.type_name_const),
-            "void {struct}_get_{field}({struct}_t *s, {field_type});".format(struct=parent.name, field=self.name, field_type=self.type_name_pointer)
+            "bool {struct}_set_{field}({struct}_t *s, {field_type});".format(struct=parent.name, field=self.name, field_type=self.type_name_const),
+            "bool {struct}_get_{field}({struct}_t *s, {field_type});".format(struct=parent.name, field=self.name, field_type=self.type_name_pointer)
         ))
 
     def generate_c_source(self):
         return ""
 
-    def generate_python_lib(self):
+    def generate_python(self):
         return ""
 
 
@@ -359,10 +359,7 @@ class EnumMember:
     def generate_typedefs(self):
         return "{} = {}".format(self.name, self.value)
 
-    def generate_c_source(self):
-        return ""
-
-    def generate_python_lib(self):
+    def generate_python(self):
         return ""
 
 
@@ -423,12 +420,19 @@ class StructDefinition:
         ))
 
     def generate_signatures(self):
-        return "\n".join(m.generate_signatures(self) for m in self.members)
+        return (
+            "{name}_t *{name}_new(void);\n".format(name=self.name) +
+            "void {name}_free({name}_t *s);\n".format(name=self.name) +
+            "bool {name}_serialize({name}_t *s uint8_t **buffer, size_t *buffer_size);\n".format(name=self.name) +
+            "{name}_t *{name}_deserialize(const uint8_t *buffer, size_t buffer_size);\n".format(name=self.name) +
+            "bool {name}_verify(const uint8_t *buffer, size_t buffer_size);\n".format(name=self.name) +
+            "\n".join(m.generate_signatures(self) for m in self.members)
+        )
 
     def generate_c_source(self):
         return ""
 
-    def generate_python_lib(self):
+    def generate_python(self):
         return ""
 
 
@@ -467,19 +471,18 @@ class EnumDefinition:
             ",\n".join(m.generate_typedefs() for m in self.members)
         ))
 
-    def generate_signatures(self):
-        return ""
-
-    def generate_c_source(self):
-        return ""
-
-    def generate_python_lib(self):
+    def generate_python(self):
         return ""
 
 
 @dataclass
 class Schema:
     definitions: Dict[str, Union[EnumDefinition, StructDefinition, TableDefinition]]
+    name: str = "ANONYMOUS_SCHEMA"
+
+    @property
+    def structs(self):
+        return (d for d in self.definitions.values() if not isinstance(d, EnumDefinition))
 
     def resolve_types(self):
         for definition in self.definitions.values():
@@ -490,20 +493,34 @@ class Schema:
             definition.validate(self)
 
     def generate_c_header(self):
+        i = 0
         return (
-            "#ifndef _SERIALIB_SCHEMA_H\n" +
-            "#define _SERIALIB_SCHEMA_H\n\n" +
+            "#ifndef _SERIALIB_{}_H\n".format(self.name) +
+            "#define _SERIALIB_{}_H\n".format(self.name) +
+            "\n" +
             "#include <stdint.h>\n" +
             "#include <stdbool.h>\n" +
-            "\n".join(d.generate_typedefs() for d in self.definitions.values()) +
-            "\n" + "\n\n".join(d.generate_signatures() for d in self.definitions.values()) + "\n\n" +
+            "\n" +
+            "typedef enum TableType_e {\n" +
+            "    TABLE_TYPE_INVALID = 0,\n    " +
+            indent(',\n'.join(
+                "TABLE_TYPE_{} = {}".format(d.name, i := i+1)
+                for d in self.structs
+            )) +
+            "\n} TableType_e;\n" +
+            "\n".join(d.generate_typedefs() for d in self.structs) +
+            "\n\n" +
+            "TableType_e {}_table_type(const uint8_t *buffer, size_t buffer_size);\n".format(
+                self.name.lower()
+            ) +
+            "\n" + "\n\n".join(d.generate_signatures() for d in self.structs) + "\n\n" +
             "#endif\n"
         )
 
     def generate_c_source(self):
         return "\n".join(d.generate_c_source() for d in self.definitions.values())
 
-    def generate_python_lib(self):
+    def generate_python(self):
         return "\n".join(d.generate_python() for d in self.definitions.values())
 
 
@@ -528,6 +545,8 @@ def main():
         print("error: invalid schema file", file=sys.stderr)
         return 1
 
+    schema.name = str(args.schema).replace('.', '_').upper()
+
     # Resolve type references
     schema.resolve_types()
 
@@ -536,7 +555,7 @@ def main():
 
     # Output to files
     if args.python:
-        python_lib = schema.generate_python_lib()
+        python_lib = schema.generate_python()
         with open(args.python, "w") as f:
             f.write(python_lib)
 

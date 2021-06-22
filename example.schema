@@ -1,4 +1,4 @@
-enum Color:byte { white, black, random }
+enum Color:byte { WHITE, BLACK, RANDOM }
 
 table LoginRequest {
     username:string = "User";
