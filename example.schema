@@ -8,3 +8,14 @@ table LoginRequest {
     b_color:Color = 2;
     admin:bool = false;
 }
+
+table Coordinate {
+    x: int;
+    y: int;
+    z: int;
+}
+
+table LoginReply {
+    username: string = "User";
+    location: Coordinate;
+}

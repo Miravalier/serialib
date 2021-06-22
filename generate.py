@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import sys
+import textwrap
 
 from dataclasses import dataclass, field
 from enum import Enum
@@ -14,9 +15,12 @@ from sly import Lexer, Parser
 install_extras(include=['dataclasses'], warn_on_error=True)
 
 
-def indent(s, amount=1):
+def indent(s, amount=2):
     return str(s).replace('\n', '\n' + '  '*amount)
 
+
+def dedent(s):
+    return textwrap.dedent(s.rstrip())
 
 
 
@@ -57,7 +61,7 @@ class SeriaLexer(Lexer):
 
     # Characters ignored between tokens
     ignore = ' \t'
-    ignore_comment = r'/\*(.|\n)*?\*/'
+    ignore_comment = r'/\*(.|\n)*?\*/|//.*'
 
     @_(r'\n+')
     def ignore_newline(self, t):
@@ -120,6 +124,7 @@ class SeriaLexer(Lexer):
 class SeriaParser(Parser):
     start = 'schema'
     tokens = SeriaLexer.tokens
+    #debugfile = 'parser.debug'
 
     @_('STRING_LITERAL')
     def literal(self, p):
@@ -129,9 +134,13 @@ class SeriaParser(Parser):
     def literal(self, p):
         return p[0]
 
-    @_('')
+    @_('IDENTIFIER')
     def enum_members(self, p):
-        return []
+        return [EnumMember(name=p[0])]
+
+    @_('IDENTIFIER EQUALS NUMBER_LITERAL')
+    def enum_members(self, p):
+        return [EnumMember(name=p[0], value=p[2])]
 
     @_('enum_members COMMA IDENTIFIER')
     def enum_members(self, p):
@@ -142,14 +151,6 @@ class SeriaParser(Parser):
     def enum_members(self, p):
         p[0].append(EnumMember(name=p[2], value=p[4]))
         return p[0]
-
-    @_('IDENTIFIER')
-    def enum_members(self, p):
-        return [EnumMember(name=p[0])]
-
-    @_('IDENTIFIER EQUALS NUMBER_LITERAL')
-    def enum_members(self, p):
-        return [EnumMember(name=p[0], value=p[2])]
 
     @_('IDENTIFIER COLON IDENTIFIER SEMICOLON')
     def struct_member(self, p):
@@ -175,9 +176,9 @@ class SeriaParser(Parser):
     def struct_member(self, p):
         return StructMember(name=p[0], type=p[3], vector=True, default=p[8], vector_size=p[5])
 
-    @_('struct_member')
+    @_('')
     def struct_members(self, p):
-        return [p[0]]
+        return []
 
     @_('struct_members struct_member')
     def struct_members(self, p):
@@ -209,60 +210,73 @@ class SeriaParser(Parser):
         p.schema.definitions[p.definition.name] = p.definition
         return p.schema
 
-class Primitive(Enum):
-    Boolean = object()
-    String = object()
-    UInt8 = object()
-    Int8 = object()
-    UInt16 = object()
-    Int16 = object()
-    UInt32 = object()
-    Int32 = object()
-    UInt64 = object()
-    Int64 = object()
+
+@dataclass
+class Primitive:
+    c_name: str
+    bit_width: Optional[int] = None
+    signed: Optional[bool] = None
+
+    def __hash__(self):
+        return hash(id(self))
+
+
+class Primitives:
+    Boolean = Primitive(c_name="bool")
+    String = Primitive(c_name="char *")
+    UInt8 = Primitive(c_name="uint8_t", bit_width=1, signed=False)
+    Int8 = Primitive(c_name="int8_t", bit_width=1, signed=True)
+    UInt16 = Primitive(c_name="uint16_t", bit_width=2, signed=False)
+    Int16 = Primitive(c_name="int16_t", bit_width=2, signed=True)
+    UInt32 = Primitive(c_name="uint32_t", bit_width=4, signed=False)
+    Int32 = Primitive(c_name="int32_t", bit_width=4, signed=True)
+    UInt64 = Primitive(c_name="uint64_t", bit_width=8, signed=False)
+    Int64 = Primitive(c_name="int64_t", bit_width=8, signed=True)
+
 
 BUILTIN_TYPES = {
     # Integer primitives
-    'uint8': Primitive.UInt8,
-    'int8': Primitive.Int8,
-    'uint16': Primitive.UInt16,
-    'int16': Primitive.Int16,
-    'uint32': Primitive.UInt32,
-    'int32': Primitive.Int32,
-    'uint64': Primitive.UInt64,
-    'int64': Primitive.Int64,
+    'uint8': Primitives.UInt8,
+    'int8': Primitives.Int8,
+    'uint16': Primitives.UInt16,
+    'int16': Primitives.Int16,
+    'uint32': Primitives.UInt32,
+    'int32': Primitives.Int32,
+    'uint64': Primitives.UInt64,
+    'int64': Primitives.Int64,
     # Non-integer primitives
-    'boolean': Primitive.Boolean,
-    'string': Primitive.String,
+    'boolean': Primitives.Boolean,
+    'string': Primitives.String,
     # Aliases
-    'long': Primitive.Int64,
-    'ulong': Primitive.UInt64,
-    'slong': Primitive.Int64,
-    'int': Primitive.Int32,
-    'uint': Primitive.UInt32,
-    'sint': Primitive.Int32,
-    'short': Primitive.Int16,
-    'ushort': Primitive.UInt16,
-    'sshort': Primitive.Int16,
-    'byte': Primitive.UInt8,
-    'ubyte': Primitive.UInt8,
-    'sbyte': Primitive.Int8,
-    'char': Primitive.Int8,
-    'uchar': Primitive.UInt8,
-    'schar': Primitive.Int8,
-    'bool': Primitive.Boolean,
-    'str': Primitive.String,
+    'long': Primitives.Int64,
+    'ulong': Primitives.UInt64,
+    'slong': Primitives.Int64,
+    'int': Primitives.Int32,
+    'uint': Primitives.UInt32,
+    'sint': Primitives.Int32,
+    'short': Primitives.Int16,
+    'ushort': Primitives.UInt16,
+    'sshort': Primitives.Int16,
+    'byte': Primitives.UInt8,
+    'ubyte': Primitives.UInt8,
+    'sbyte': Primitives.Int8,
+    'char': Primitives.Int8,
+    'uchar': Primitives.UInt8,
+    'schar': Primitives.Int8,
+    'bool': Primitives.Boolean,
+    'str': Primitives.String,
 }
 
+
 INTEGER_PRIMITIVES = {
-    Primitive.UInt8: (1, False),
-    Primitive.Int8: (1, True),
-    Primitive.UInt16: (2, False),
-    Primitive.Int16: (2, True),
-    Primitive.UInt32: (4, False),
-    Primitive.Int32: (4, True),
-    Primitive.UInt64: (8, False),
-    Primitive.Int64: (8, True),
+    Primitives.UInt8,
+    Primitives.Int8,
+    Primitives.UInt16,
+    Primitives.Int16,
+    Primitives.UInt32,
+    Primitives.Int32,
+    Primitives.UInt64,
+    Primitives.Int64,
 }
 
 
@@ -280,6 +294,48 @@ class StructMember:
         else:
             self.type = schema.definitions[self.type]
 
+    @property
+    def type_name_pointer(self):
+        if self.type.c_name.endswith('*'):
+            separator = ""
+        else:
+            separator = " "
+
+        if self.vector:
+            return "{}{}**{}".format(self.type.c_name, separator, self.name)
+        else:
+            return "{}{}*{}".format(self.type.c_name, separator, self.name)
+
+    @property
+    def type_name(self):
+        if self.type.c_name.endswith('*'):
+            separator = ""
+        else:
+            separator = " "
+
+        if self.vector:
+            if self.vector_size:
+                return "{}{}{}[{}]".format(self.type.c_name, separator, self.name, self.vector_size)
+            else:
+                return "{}{}*{}".format(self.type.c_name, separator, self.name)
+        else:
+            return "{}{}{}".format(self.type.c_name, separator, self.name)
+
+    def generate_typedefs(self):
+        return "{};".format(self.type_name)
+
+    def generate_signatures(self, parent):
+        return "\n".join((
+            "void {struct}_set_{field}({struct}_t *s, {field_type});".format(struct=parent.name, field=self.name, field_type=self.type_name),
+            "void {struct}_get_{field}({struct}_t *s, {field_type});".format(struct=parent.name, field=self.name, field_type=self.type_name_pointer)
+        ))
+
+    def generate_c_source(self):
+        return ""
+
+    def generate_python_lib(self):
+        return ""
+
 
 @dataclass
 class EnumMember:
@@ -292,11 +348,24 @@ class EnumMember:
         parent.values.add(self.value)
         parent.next_value = self.value + 1
 
+    def generate_typedefs(self):
+        return "{} = {}".format(self.name, self.value)
+
+    def generate_c_source(self):
+        return ""
+
+    def generate_python_lib(self):
+        return ""
+
 
 @dataclass
 class StructDefinition:
     name: str
     members: List[StructMember] = field(default_factory=list)
+
+    @property
+    def c_name(self):
+        return "{}_t".format(self.name)
 
     def resolve_types(self, schema):
         for struct_member in self.members:
@@ -322,12 +391,12 @@ class StructDefinition:
                     raise TypeError("The default value of {}.{} must be an integer.".format(
                         self.name, struct_member.name))
             # If this type is a string primitive, verify default is a string
-            elif struct_member.type is Primitive.String:
+            elif struct_member.type is Primitives.String:
                 if not isinstance(struct_member.default, str):
                     raise TypeError("The default value of string {}.{} must be a string.".format(
                         self.name, struct_member.name))
             # If this type is a boolean primitive, verify default is 0 or 1
-            elif struct_member.type is Primitive.Boolean:
+            elif struct_member.type is Primitives.Boolean:
                 if struct_member.default != 0 and struct_member.default != 1:
                     raise TypeError("The default value of boolean {}.{} must be true (1) or false (0).".format(
                         self.name, struct_member.name))
@@ -335,6 +404,24 @@ class StructDefinition:
             else:
                 raise TypeError("Struct member {}.{} has an unrecognized type: '{}'".format(
                     self.name, struct_member.name, struct_member.type))
+
+    def generate_typedefs(self):
+        return dedent("""
+            typedef struct {name}_t {{
+                {members}
+            }} {name}_t;
+        """).format(name=self.name, members=indent(
+            "\n".join(m.generate_typedefs() for m in self.members)
+        ))
+
+    def generate_signatures(self):
+        return "\n".join(m.generate_signatures(self) for m in self.members)
+
+    def generate_c_source(self):
+        return ""
+
+    def generate_python_lib(self):
+        return ""
 
 
 class TableDefinition(StructDefinition):
@@ -349,6 +436,10 @@ class EnumDefinition:
     next_value: int = 0
     values: Set[int] = field(default_factory=set)
 
+    @property
+    def c_name(self):
+        return "{}_e".format(self.name)
+
     def resolve_types(self, schema):
         self.size = BUILTIN_TYPES.get(self.size, self.size)
         if self.size not in INTEGER_PRIMITIVES:
@@ -358,6 +449,24 @@ class EnumDefinition:
 
     def validate(self, schema):
         pass
+
+    def generate_typedefs(self):
+        return dedent("""
+            typedef enum {name}_e {{
+                {members}
+            }} {name}_e;
+        """).format(name=self.name, members=indent(
+            ",\n".join(m.generate_typedefs() for m in self.members)
+        ))
+
+    def generate_signatures(self):
+        return ""
+
+    def generate_c_source(self):
+        return ""
+
+    def generate_python_lib(self):
+        return ""
 
 
 @dataclass
@@ -373,22 +482,30 @@ class Schema:
             definition.validate(self)
 
     def generate_c_header(self):
-        return "\n"
+        return (
+            "#ifndef _SERIALIB_SCHEMA_H\n" +
+            "#define _SERIALIB_SCHEMA_H\n\n" +
+            "#include <stdint.h>\n" +
+            "#include <stdbool.h>\n" +
+            "\n".join(d.generate_typedefs() for d in self.definitions.values()) +
+            "\n" + "\n\n".join(d.generate_signatures() for d in self.definitions.values()) + "\n\n" +
+            "#endif\n"
+        )
 
     def generate_c_source(self):
-        return "\n"
+        return "\n".join(d.generate_c_source() for d in self.definitions.values())
 
     def generate_python_lib(self):
-        return "\n"
+        return "\n".join(d.generate_python() for d in self.definitions.values())
 
 
 def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('schema', type=Path)
-    parser.add_argument('--generate-python', type=str, default=None)
-    parser.add_argument('--generate-c-source', type=str, default=None)
-    parser.add_argument('--generate-c-header', type=str, default=None)
+    parser.add_argument('--python', type=str, default=None)
+    parser.add_argument('--c-source', type=str, default=None)
+    parser.add_argument('--c-header', type=str, default=None)
     args = parser.parse_args()
 
     # Read schema file
@@ -403,34 +520,26 @@ def main():
         print("error: invalid schema file", file=sys.stderr)
         return 1
 
-    # Debug
-    print("[First Pass]")
-    pprint(schema)
-
     # Resolve type references
     schema.resolve_types()
-
-    # Debug
-    print("[After Type Resolution]")
-    pprint(schema)
 
     # Validate defaults
     schema.validate()
 
     # Output to files
-    if args.generate_python:
+    if args.python:
         python_lib = schema.generate_python_lib()
-        with open(args.generate_python, "w") as f:
+        with open(args.python, "w") as f:
             f.write(python_lib)
 
-    if args.generate_c_source:
+    if args.c_source:
         c_source = schema.generate_c_source()
-        with open(args.generate_c_source, "w") as f:
+        with open(args.c_source, "w") as f:
             f.write(c_source)
 
-    if args.generate_c_header:
+    if args.c_header:
         c_header = schema.generate_c_header()
-        with open(args.generate_c_header, "w") as f:
+        with open(args.c_header, "w") as f:
             f.write(c_header)
 
     return 0
