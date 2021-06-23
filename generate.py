@@ -365,7 +365,7 @@ class StructMember:
 
     def generate_free(self):
         if self.vector:
-            free = ""
+            free = "s->{}_present = false;\n    ".format(self.name)
             if self.type is Primitives.String:
                 free += indent(dedent("""
                     for (size_t i=0; i < {length}; i++) {{
@@ -404,6 +404,7 @@ class StructMember:
         elif self.type is Primitives.String:
             return indent(dedent("""
                 if (s->{name}_present) {{
+                    s->{name}_present = false;
                     free(s->{name});
                 }}
             """).format(
@@ -412,6 +413,7 @@ class StructMember:
         elif isinstance(self.type, (TableDefinition, StructDefinition)):
             return indent(dedent("""
                 if (s->{name}_present) {{
+                    s->{name}_present = false;
                     {type_name}_free(s->{name});
                 }}
             """).format(
@@ -453,6 +455,7 @@ class StructMember:
         }
 
         set_signature = "bool {parent_name}_set_{name}({parent_name}_t *s, {const_type}) {{".format(**params)
+        set_implementation = self.generate_free()
         get_signature = "bool {parent_name}_get_{name}({parent_name}_t *s, {pointer_type}) {{".format(**params)
         get_implementation = "*{name} = s->{name};".format(**params)
         missing_get_implementation = "return false;".format(**params)
@@ -477,12 +480,12 @@ class StructMember:
                 get_signature = (
                     "bool {parent_name}_get_{name}({parent_name}_t *s, {pointer_type}, size_t *{name}_length) {{"
                 ).format(**params)
-                set_implementation = (
+                set_implementation += (
                     "s->{name}_length = {name}_length;" +
                     "\n    "
                 ).format(**params)
             else:
-                set_implementation = (
+                set_implementation += (
                     "size_t {name}_length = {vector_size};" +
                     "\n    "
                 ).format(**params)
@@ -516,16 +519,16 @@ class StructMember:
                 """)).format(**params)
 
         elif self.type is Primitives.String:
-            set_implementation = indent(dedent("""
+            set_implementation += indent(dedent("""
                 s->{name} = strdup({name});
                 if (s->{name} == NULL) {{
                     return false;
                 }}
             """)).format(**params)
         elif isinstance(self.type, (TableDefinition, StructDefinition)):  
-            set_implementation = "s->{name} = {type_name}_copy({name});".format(**params)
+            set_implementation += "s->{name} = {type_name}_copy({name});".format(**params)
         else:
-            set_implementation = "s->{name} = {name};".format(**params)
+            set_implementation += "s->{name} = {name};".format(**params)
 
         params["set_implementation"] = set_implementation
         params["set_signature"] = set_signature
