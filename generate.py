@@ -50,7 +50,6 @@ class SeriaLexer(Lexer):
 
         COLON, SEMICOLON, COMMA, EQUALS,
 
-        #OPEN_PAREN, CLOSE_PAREN,
         OPEN_BRACKET, CLOSE_BRACKET,
         OPEN_BRACE, CLOSE_BRACE,
 
@@ -111,8 +110,6 @@ class SeriaLexer(Lexer):
     COMMA           = r','
     EQUALS          = r'='
 
-    #OPEN_PAREN      = r'\('
-    #CLOSE_PAREN     = r'\)'
     OPEN_BRACKET    = r'\['
     CLOSE_BRACKET   = r'\]'
     OPEN_BRACE      = r'\{'
@@ -122,7 +119,6 @@ class SeriaLexer(Lexer):
 class SeriaParser(Parser):
     start = 'schema'
     tokens = SeriaLexer.tokens
-    #debugfile = 'parser.debug'
 
     @_('STRING_LITERAL')
     def literal(self, p):
