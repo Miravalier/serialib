@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-from os import name
 
 import sys
 import textwrap
-
 from dataclasses import dataclass, field
-from enum import Enum
+from os import name
 from pathlib import Path
-from typing import Dict, List, Union, Tuple, Optional, Set
+from typing import Dict, List, Optional, Set, Union
 
-from prettyprinter import pprint, install_extras
+from prettyprinter import install_extras, pprint
 from sly import Lexer, Parser
-
 
 # Pretty printer dataclasses support
 install_extras(include=['dataclasses'], warn_on_error=True)
@@ -24,7 +21,6 @@ def indent(s, amount=2):
 
 def dedent(s):
     return textwrap.dedent(s.rstrip()).lstrip()
-
 
 
 ESCAPE_CODES = {
@@ -546,7 +542,8 @@ class StructDefinition:
         return dedent("""
             static {name}_t *{name}_copy({name}_t *s) {{
                 {name}_t *new_s = {name}_new();
-                {member_sets}return new_s;
+                {member_sets}
+                return new_s;
             }}
 
             {name}_t *{name}_new(void) {{
@@ -554,7 +551,8 @@ class StructDefinition:
             }}
 
             void {name}_free({name}_t *s) {{
-                {frees}free(s);
+                {frees}
+                free(s);
             }}
             
             bool {name}_serialize({name}_t *s, uint8_t **buffer, size_t *buffer_size) {{
@@ -704,22 +702,26 @@ def main():
     schema.validate()
 
     # Output to files
-    if args.python:
-        python_lib = schema.generate_python()
-        with open(args.python, "w") as f:
-            f.write(python_lib)
+    if not args.python:
+        args.python = args.schema.with_suffix('.py')
 
-    if args.c_source:
-        if not args.c_header:
-            parser.error("Cannot specify --c-source without --c-header")
-        c_source = schema.generate_c_source(args.c_header.name)
-        with open(args.c_source, "w") as f:
-            f.write(c_source)
+    if not args.c_source:
+        args.c_source = args.schema.with_suffix('.c')
+    
+    if not args.c_header:
+        args.c_header = args.schema.with_suffix('.h')
 
-    if args.c_header:
-        c_header = schema.generate_c_header()
-        with open(args.c_header, "w") as f:
-            f.write(c_header)
+    python_lib = schema.generate_python()
+    with open(args.python, "w") as f:
+        f.write(python_lib)
+
+    c_source = schema.generate_c_source(args.c_header.name)
+    with open(args.c_source, "w") as f:
+        f.write(c_source)
+
+    c_header = schema.generate_c_header()
+    with open(args.c_header, "w") as f:
+        f.write(c_header)
 
     return 0
 
