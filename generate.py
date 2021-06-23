@@ -354,6 +354,9 @@ class StructMember:
 
     def generate_signatures(self, parent):
         return dedent("""
+            bool {struct}_set_{field}({struct}_t *s, {const_field_type}, size_t {field}_length);
+            bool {struct}_get_{field}({struct}_t *s, {pointer_field_type}, size_t *{field}_length);
+        """ if self.vector and self.vector_size is None else """
             bool {struct}_set_{field}({struct}_t *s, {const_field_type});
             bool {struct}_get_{field}({struct}_t *s, {pointer_field_type});
         """).format(
@@ -365,9 +368,9 @@ class StructMember:
 
     def generate_free(self):
         if self.vector:
-            free = "s->{}_present = false;\n    ".format(self.name)
+            free = "s->{}_present = false;".format(self.name)
             if self.type is Primitives.String:
-                free += indent(dedent("""
+                free += indent("\n" + dedent("""
                     for (size_t i=0; i < {length}; i++) {{
                         free(s->{name}[i]);
                     }}
@@ -378,9 +381,9 @@ class StructMember:
                         if self.vector_size is None else
                         self.vector_size
                     )
-                ) + "\n")
+                ))
             elif isinstance(self.type, (TableDefinition, StructDefinition)):
-                free += indent(dedent("""
+                free += indent("\n" + dedent("""
                     for (size_t i=0; i < {length}; i++) {{
                         {type_name}_free(s->{name}[i]);
                     }}
@@ -392,10 +395,12 @@ class StructMember:
                         if self.vector_size is None else
                         self.vector_size
                     )
-                ) + "\n")
+                ))
+            if self.vector_size is None:
+                free += indent("\nfree(s->{name});".format(name=self.name), 2)
             return indent(dedent("""
                 if (s->{name}_present) {{
-                    {free}free(s->{name});
+                    {free}
                 }}
             """).format(
                 name=self.name,
@@ -480,41 +485,59 @@ class StructMember:
                 get_signature = (
                     "bool {parent_name}_get_{name}({parent_name}_t *s, {pointer_type}, size_t *{name}_length) {{"
                 ).format(**params)
-                set_implementation += (
-                    "s->{name}_length = {name}_length;" +
-                    "\n    "
-                ).format(**params)
-            else:
-                set_implementation += (
-                    "size_t {name}_length = {vector_size};" +
-                    "\n    "
-                ).format(**params)
-            if self.type is Primitives.String:
                 set_implementation += indent(dedent("""
+                    s->{name}_length = {name}_length;
                     s->{name} = malloc(sizeof(*{name}) * {name}_length);
                     if (s->{name} == NULL) {{
                         return false;
                     }}
+                """)).format(**params) + "\n    "
+            else:
+                set_implementation += (
+                    "size_t {name}_length = {vector_size};"
+                ).format(**params) + "\n    "
+            if self.type is Primitives.String:
+                set_implementation += indent(dedent("""
                     for (size_t i=0; i < {name}_length; i++) {{
                         s->{name}[i] = strdup({name}[i]);
+                        if (s->{name}[i] == NULL) {{
+                            for (size_t j=0; j < i; j++) {{
+                                free(s->{name}[j]);
+                            }}
+                """) + (
+                    indent("\n" + dedent("""
+                        free(s->{name});
+                    """) + "\n", 4)
+                    if self.vector_size is None else
+                    indent("\n", 4)
+                ) +
+                dedent("""
+                            return false;
+                        }}
                     }}
                 """)).format(**params)
             elif isinstance(self.type, (TableDefinition, StructDefinition)):
                 set_implementation += indent(dedent("""
-                    s->{name} = malloc(sizeof(*{name}) * {name}_length);
-                    if (s->{name} == NULL) {{
-                        return false;
-                    }}
                     for (size_t i=0; i < {name}_length; i++) {{
                         s->{name}[i] = {type_name}_copy({name}[i]);
+                        if (s->{name}[i] == NULL) {{
+                            for (size_t j=0; j < i; j++) {{
+                                {type_name}_free(s->{name}[j]);
+                            }}
+                """) + (
+                    indent("\n" + dedent("""
+                        free(s->{name});
+                    """) + "\n", 4)
+                    if self.vector_size is None else
+                    indent("\n", 4)
+                ) +
+                dedent("""
+                            return false;
+                        }}
                     }}
                 """)).format(**params)
             else:
                 set_implementation += indent(dedent("""
-                    s->{name} = malloc(sizeof(*{name}) * {name}_length);
-                    if (s->{name} == NULL) {{
-                        return false;
-                    }}
                     memcpy(s->{name}, {name}, sizeof(*{name}) * {name}_length);
                 """)).format(**params)
 
@@ -526,7 +549,12 @@ class StructMember:
                 }}
             """)).format(**params)
         elif isinstance(self.type, (TableDefinition, StructDefinition)):  
-            set_implementation += "s->{name} = {type_name}_copy({name});".format(**params)
+            set_implementation += indent(dedent("""
+                s->{name} = {type_name}_copy({name});
+                if (s->{name} == NULL) {{
+                    return false;
+                }}
+            """)).format(**params)
         else:
             set_implementation += "s->{name} = {name};".format(**params)
 
@@ -645,7 +673,7 @@ class StructDefinition:
 
     def generate_c_source(self):
         return dedent("""
-            static {name}_t *{name}_copy({name}_t *s) {{
+            static {name}_t *{name}_copy(const {name}_t *s) {{
                 {name}_t *new_s = {name}_new();
                 {member_sets}
                 return new_s;

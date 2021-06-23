@@ -1,25 +1,32 @@
-enum Color:byte { WHITE, BLACK, RANDOM }
+enum Color:byte { WHITE, BLACK, BLUE, RED, GREEN, YELLOW, ORANGE, PURPLE }
 
-table LoginRequest {
-    username:string = "User";
-    password:[uint8];
-    salt:[uint8:16];
-    a_color:Color;
-    b_color:Color = 1;
-    admin:bool = false;
+struct Alpha {
+    alternative: uint32 = 42;
+    blues: string = "Lorem ipsum.";
+    country: Color = 0;
+    disco: bool = true;
 }
 
-table Coordinate {
-    x: int;
-    y: int;
-    z: int;
+table Beta {
+    aardvark: uint32;
+    buffalo: string;
+    chinchilla: Color;
+    dinosaur: bool;
+    echidna: Alpha;
 }
 
-table LoginReply {
-    username: string = "User";
-    location: Coordinate;
-    history: [Coordinate];
-    path: [Coordinate:2];
-    colors: [Color];
-    color_palette: [Color:2];
+table Gamma {
+    asteroid: [uint32];
+    black_hole: [string];
+    comet: [Color];
+    deep_space: [bool];
+    earth: [Alpha];
+}
+
+table Delta {
+    artist: [uint32:2];
+    baker: [string:4];
+    chemist: [Color:6];
+    doctor: [bool:8];
+    engineer: [Alpha:10];
 }
