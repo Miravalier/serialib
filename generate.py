@@ -4,7 +4,6 @@ from __future__ import annotations
 import sys
 import textwrap
 from dataclasses import dataclass, field
-from os import name
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Union
 
@@ -298,7 +297,7 @@ class StructMember:
             self.type = schema.definitions[self.type]
 
     @property
-    def type_name_pointer(self):
+    def pointer_type(self):
         if self.type.c_name.endswith('*'):
             separator = ""
         else:
@@ -310,15 +309,24 @@ class StructMember:
             return "{}{}*{}".format(self.type.c_name, separator, self.name)
 
     @property
-    def type_name_const(self):
-        type_name = self.type_name
+    def const_type(self):
+        if self.type.c_name.endswith('*'):
+            separator = ""
+        else:
+            separator = " "
+
+        if self.vector:
+            type_name = "{}{}*{}".format(self.type.c_name, separator, self.name)
+        else:
+            type_name = "{}{}{}".format(self.type.c_name, separator, self.name)
+        
         if '*' in type_name:
             return 'const {}'.format(type_name)
         else:
             return type_name
 
     @property
-    def type_name(self):
+    def c_type(self):
         if self.type.c_name.endswith('*'):
             separator = ""
         else:
@@ -333,7 +341,13 @@ class StructMember:
             return "{}{}{}".format(self.type.c_name, separator, self.name)
 
     def generate_typedef_field(self):
-        return "{};".format(self.type_name)
+        if self.vector and self.vector_size is None:
+            return (
+                "{};\n".format(self.c_type) +
+                "size_t {}_length;".format(self.name)
+            )
+        else:
+            return "{};".format(self.c_type)
 
     def generate_typedef_present(self):
         return "bool {}_present;".format(self.name)
@@ -345,12 +359,57 @@ class StructMember:
         """).format(
             struct=parent.name,
             field=self.name,
-            pointer_field_type=self.type_name_pointer,
-            const_field_type=self.type_name_const
+            pointer_field_type=self.pointer_type,
+            const_field_type=self.const_type
         )
 
     def generate_free(self):
-        if isinstance(self.type, (TableDefinition, StructDefinition)):
+        if self.vector:
+            free = ""
+            if self.type is Primitives.String:
+                free += indent(dedent("""
+                    for (size_t i=0; i < {length}; i++) {{
+                        free(s->{name}[i]);
+                    }}
+                """).format(
+                    name=self.name,
+                    length=(
+                        "s->{}_length".format(self.name)
+                        if self.vector_size is None else
+                        self.vector_size
+                    )
+                ) + "\n")
+            elif isinstance(self.type, (TableDefinition, StructDefinition)):
+                free += indent(dedent("""
+                    for (size_t i=0; i < {length}; i++) {{
+                        {type_name}_free(s->{name}[i]);
+                    }}
+                """).format(
+                    name=self.name,
+                    type_name=self.type.name,
+                    length=(
+                        "s->{}_length".format(self.name)
+                        if self.vector_size is None else
+                        self.vector_size
+                    )
+                ) + "\n")
+            return indent(dedent("""
+                if (s->{name}_present) {{
+                    {free}free(s->{name});
+                }}
+            """).format(
+                name=self.name,
+                free=free
+            ) + "\n")
+        elif self.type is Primitives.String:
+            return indent(dedent("""
+                if (s->{name}_present) {{
+                    free(s->{name});
+                }}
+            """).format(
+                name=self.name
+            ) + "\n")
+        elif isinstance(self.type, (TableDefinition, StructDefinition)):
             return indent(dedent("""
                 if (s->{name}_present) {{
                     {type_name}_free(s->{name});
@@ -359,92 +418,138 @@ class StructMember:
                 type_name=self.type.name,
                 name=self.name
             ) + "\n")
-        elif self.vector:
-            return indent(dedent("""
-                if (s->{name}_present) {{
-                    free(s->{name});
-                }}
-            """).format(
-                name=self.name
-            ) + "\n")
         else:
             return ""
 
     def generate_member_sets(self, parent: Union[StructDefinition, TableDefinition]):
-        return indent(dedent("""
-            if (s->{name}_present) {{
-                {parent_name}_set_{name}(new_s, s->{name});
-            }}
-        """).format(
-            name=self.name,
-            parent_name=parent.name
-        ) + "\n")
+        if self.vector and not self.vector_size:
+            return indent(dedent("""
+                if (s->{name}_present) {{
+                    {parent_name}_set_{name}(new_s, s->{name}, s->{name}_length);
+                }}
+            """).format(
+                name=self.name,
+                parent_name=parent.name
+            ) + "\n")
+        else:
+            return indent(dedent("""
+                if (s->{name}_present) {{
+                    {parent_name}_set_{name}(new_s, s->{name});
+                }}
+            """).format(
+                name=self.name,
+                parent_name=parent.name
+            ) + "\n")
 
     def generate_get_set(self, parent: Union[StructDefinition, TableDefinition]):
         params = {
             "parent_name": parent.name,
             "name": self.name,
-            "type_name_const": self.type_name_const,
-            "type_name_pointer": self.type_name_pointer,
+            "const_type": self.const_type,
+            "pointer_type": self.pointer_type,
             "type_name": self.type.name,
             "vector_size": self.vector_size,
             "default": self.default,
         }
 
-        set_implementation = ""
-        set_signature = "bool {parent_name}_set_{name}({parent_name}_t *s, {type_name_const}) {{".format(**params)
+        set_signature = "bool {parent_name}_set_{name}({parent_name}_t *s, {const_type}) {{".format(**params)
+        get_signature = "bool {parent_name}_get_{name}({parent_name}_t *s, {pointer_type}) {{".format(**params)
+        get_implementation = "*{name} = s->{name};".format(**params)
+        missing_get_implementation = "return false;".format(**params)
 
-        if isinstance(self.type, (TableDefinition, StructDefinition)):  
-            set_implementation += "s->{name} = {type_name}_copy({name});\n".format(**params)
-        elif self.vector:
-            if self.vector_size is not None:
-                # TODO
-                # //s->{name} = malloc(sizeof({type_name}) * {name}_length);
-                # //if (s->{name} == NULL) {{
-                # //  return false;
-                # //}}
-                set_implementation += "memcpy(s->{name}, {name}, sizeof({type_name}) * {vector_size});".format(**params)
+        if self.default is not None:
+            if isinstance(self.default, str):
+                missing_get_implementation = indent(dedent("""
+                    *{name} = (char *)"{default}";
+                    return true;
+                """), 4).format(**params)
             else:
-                set_signature = "bool {parent_name}_set_{name}({parent_name}_t *s, {type_name_const}, size_t {name}_length) {{".format(**params)
-                set_implementation += "s->{name} = malloc(sizeof({type_name}) * {name}_length);".format(**params)
-                set_implementation += "\n    "
-                set_implementation += "memcpy(s->{name}, {name}, sizeof({type_name}) * {name}_length);".format(**params)
-            
-        elif self.vector and self.vector_size is None:
-            set_implementation += "s->{name} = {type_name}_copy({name});".format(**params)
+                missing_get_implementation = indent(dedent("""
+                    *{name} = {default};
+                    return true;
+                """), 4).format(**params)
+
+        if self.vector:
+            if self.vector_size is None:
+                set_signature = (
+                    "bool {parent_name}_set_{name}({parent_name}_t *s, {const_type}, size_t {name}_length) {{"
+                ).format(**params)
+                get_signature = (
+                    "bool {parent_name}_get_{name}({parent_name}_t *s, {pointer_type}, size_t *{name}_length) {{"
+                ).format(**params)
+                set_implementation = (
+                    "s->{name}_length = {name}_length;" +
+                    "\n    "
+                ).format(**params)
+            else:
+                set_implementation = (
+                    "size_t {name}_length = {vector_size};" +
+                    "\n    "
+                ).format(**params)
+            if self.type is Primitives.String:
+                set_implementation += indent(dedent("""
+                    s->{name} = malloc(sizeof(*{name}) * {name}_length);
+                    if (s->{name} == NULL) {{
+                        return false;
+                    }}
+                    for (size_t i=0; i < {name}_length; i++) {{
+                        s->{name}[i] = strdup({name}[i]);
+                    }}
+                """)).format(**params)
+            elif isinstance(self.type, (TableDefinition, StructDefinition)):
+                set_implementation += indent(dedent("""
+                    s->{name} = malloc(sizeof(*{name}) * {name}_length);
+                    if (s->{name} == NULL) {{
+                        return false;
+                    }}
+                    for (size_t i=0; i < {name}_length; i++) {{
+                        s->{name}[i] = {type_name}_copy({name}[i]);
+                    }}
+                """)).format(**params)
+            else:
+                set_implementation += indent(dedent("""
+                    s->{name} = malloc(sizeof(*{name}) * {name}_length);
+                    if (s->{name} == NULL) {{
+                        return false;
+                    }}
+                    memcpy(s->{name}, {name}, sizeof(*{name}) * {name}_length);
+                """)).format(**params)
+
+        elif self.type is Primitives.String:
+            set_implementation = indent(dedent("""
+                s->{name} = strdup({name});
+                if (s->{name} == NULL) {{
+                    return false;
+                }}
+            """)).format(**params)
+        elif isinstance(self.type, (TableDefinition, StructDefinition)):  
+            set_implementation = "s->{name} = {type_name}_copy({name});".format(**params)
         else:
-            set_implementation += "s->{name} = {name};".format(**params)
+            set_implementation = "s->{name} = {name};".format(**params)
 
         params["set_implementation"] = set_implementation
         params["set_signature"] = set_signature
+        params["get_signature"] = get_signature
+        params["missing_get_implementation"] = missing_get_implementation
+        params["get_implementation"] = get_implementation
         
         return dedent("""
             {set_signature}
-                s->{name}_present = true;
                 {set_implementation}
+                s->{name}_present = true;
                 return true;
             }}
 
-            bool {parent_name}_get_{name}({parent_name}_t *s, {type_name_pointer}) {{
+            {get_signature}
                 if (s->{name}_present) {{
-                    *{name} = s->{name};
-                    return true;
-                }}
-                else if ({default}) {{
-                    *{name} = {default};
+                    {get_implementation}
                     return true;
                 }}
                 else {{
-                    return false;
+                    {missing_get_implementation}
                 }}
             }}
         """).format(**params)
-
-    def generate_c_source(self):
-        return ""
-
-    def generate_python(self):
-        return ""
 
 
 @dataclass
@@ -461,9 +566,6 @@ class EnumMember:
     def generate_typedefs(self):
         return "{} = {}".format(self.name, self.value)
 
-    def generate_python(self):
-        return ""
-
 
 @dataclass
 class StructDefinition:
@@ -478,7 +580,7 @@ class StructDefinition:
         for struct_member in self.members:
             struct_member.resolve_type(schema)
 
-    def validate(self, schema):
+    def validate(self):
         for struct_member in self.members:
             # Below this are checks run only when a default is present
             if struct_member.default is None:
@@ -570,7 +672,7 @@ class StructDefinition:
             {get_set}
         """).format(
             frees="".join(m.generate_free() for m in self.members),
-            get_set="\n".join(m.generate_get_set(self) for m in self.members),
+            get_set="\n\n".join(m.generate_get_set(self) for m in self.members),
             member_sets="".join(m.generate_member_sets(self) for m in self.members),
             name=self.name
         )
@@ -602,7 +704,7 @@ class EnumDefinition:
         for enum_member in self.members:
             enum_member.resolve_value(self)
 
-    def validate(self, schema):
+    def validate(self):
         pass
 
     def generate_typedefs(self):
@@ -633,7 +735,7 @@ class Schema:
 
     def validate(self):
         for definition in self.definitions.values():
-            definition.validate(self)
+            definition.validate()
 
     def generate_c_header(self):
         i = 0

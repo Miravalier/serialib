@@ -5,7 +5,7 @@ table LoginRequest {
     password:[uint8];
     salt:[uint8:16];
     a_color:Color;
-    b_color:Color = 2;
+    b_color:Color = 1;
     admin:bool = false;
 }
 
@@ -18,4 +18,8 @@ table Coordinate {
 table LoginReply {
     username: string = "User";
     location: Coordinate;
+    history: [Coordinate];
+    path: [Coordinate:2];
+    colors: [Color];
+    color_palette: [Color:2];
 }
