@@ -664,6 +664,7 @@ class StructDefinition:
     def generate_signatures(self):
         return (
             "{name}_t *{name}_new(void);\n".format(name=self.name) +
+            "{name}_t *{name}_copy(const {name}_t *s);\n".format(name=self.name) +
             "void {name}_free({name}_t *s);\n".format(name=self.name) +
             "bool {name}_serialize({name}_t *s, uint8_t **buffer, size_t *buffer_size);\n".format(name=self.name) +
             "{name}_t *{name}_deserialize(const uint8_t *buffer, size_t buffer_size);\n".format(name=self.name) +
@@ -673,7 +674,7 @@ class StructDefinition:
 
     def generate_c_source(self):
         return dedent("""
-            static {name}_t *{name}_copy(const {name}_t *s) {{
+            {name}_t *{name}_copy(const {name}_t *s) {{
                 {name}_t *new_s = {name}_new();
                 {member_sets}
                 return new_s;
