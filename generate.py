@@ -285,6 +285,7 @@ class StructMember:
     default: Union[str, int, None] = None
     vector: bool = False
     vector_size: Optional[int] = None
+    field_id: Optional[int] = None
 
     def resolve_type(self, schema):
         if self.type in BUILTIN_TYPES:
@@ -424,11 +425,56 @@ class StructMember:
         else:
             return ""
 
+    def generate_member_serialize(self, parent: Union[StructDefinition, TableDefinition]):
+        params = {
+            "name": self.name,
+            "type_name": self.type.name,
+            "field_id": self.field_id
+        }
+
+        type_serialize = ""
+        if isinstance(self.type, (TableDefinition, StructDefinition)):
+            pass
+        elif isinstance(self.type, EnumDefinition):
+            pass
+        elif self.type in INTEGER_PRIMITIVES:
+            pass
+        elif self.type is Primitives.String:
+            type_serialize = indent(dedent("""
+                if (strlen(s->{name}) > 255) {{
+                    *buffer_size += 2 + sizeof(uint32_t) + strlen(s_>{name});
+                    *buffer = realloc(*buffer, *buffer_size);
+                    ((uint16_t*)((*buffer) + buffer_size))[0] = {field_id} | 0x8000
+                }}
+                else {{
+                    *buffer_size += 2 + sizeof(uint8_t) + strlen(s_>{name});
+                    *buffer = realloc(*buffer, *buffer_size);
+                }}
+            """), 4).format(**params)
+            pass
+        elif self.type is Primitives.Boolean:
+            pass
+        else:
+            raise TypeError("Unrecognized member type '{}'".format(self.type))
+
+        params["member_type_serialize"] = type_serialize
+
+        return indent(dedent("""
+            if (s->{name}_present) {{
+                ((uint16_t *)(*buffer))[1] += 1;
+                {member_type_serialize}
+            }}
+        """)).format(**params)
+
     def generate_member_sets(self, parent: Union[StructDefinition, TableDefinition]):
         if self.vector and not self.vector_size:
             return indent(dedent("""
                 if (s->{name}_present) {{
-                    {parent_name}_set_{name}(new_s, s->{name}, s->{name}_length);
+                    if (!{parent_name}_set_{name}(new_s, s->{name}, s->{name}_length)) {{
+                        {parent_name}_free(new_s);
+                        return NULL;
+                    }}
+
                 }}
             """).format(
                 name=self.name,
@@ -437,7 +483,10 @@ class StructMember:
         else:
             return indent(dedent("""
                 if (s->{name}_present) {{
-                    {parent_name}_set_{name}(new_s, s->{name});
+                    if (!{parent_name}_set_{name}(new_s, s->{name})) {{
+                        {parent_name}_free(new_s);
+                        return NULL;
+                    }}
                 }}
             """).format(
                 name=self.name,
@@ -598,6 +647,7 @@ class EnumMember:
 class StructDefinition:
     name: str
     members: List[StructMember] = field(default_factory=list)
+    table_id: Optional[int] = None
 
     @property
     def c_name(self):
@@ -672,6 +722,9 @@ class StructDefinition:
         return dedent("""
             {name}_t *{name}_copy(const {name}_t *s) {{
                 {name}_t *new_s = {name}_new();
+                if (new_s == NULL) {{
+                    return NULL;
+                }}
                 {member_sets}
                 return new_s;
             }}
@@ -686,7 +739,16 @@ class StructDefinition:
             }}
             
             bool {name}_serialize({name}_t *s, uint8_t **buffer, size_t *buffer_size) {{
-
+                // Pack up the table_id based on the table's position in the schema
+                // gonna have to figure that out somehow
+                *buffer = malloc(4);
+                ((uint16_t *)(*buffer))[0] = (uint16_t)TABLE_TYPE_{name};
+                ((uint16_t *)(*buffer))[1] = 0;
+                *buffer_size = 4;
+                // Iterate over the members of that schema, checking each field
+                {member_serialize}
+                // If it's present, move a memory marker around and slap that shit in
+                // rinse repeat until we're done
             }}
 
             {name}_t *{name}_deserialize(const uint8_t *buffer, size_t buffer_size) {{
@@ -702,7 +764,9 @@ class StructDefinition:
             frees="".join(m.generate_free() for m in self.members),
             get_set="\n\n".join(m.generate_get_set(self) for m in self.members),
             member_sets="".join(m.generate_member_sets(self) for m in self.members),
-            name=self.name
+            member_serialize="\n".join(m.generate_member_serialize(self) for m in self.members),
+            name=self.name,
+            id=self.table_id
         )
 
     def generate_python(self):
@@ -752,6 +816,7 @@ class EnumDefinition:
 class Schema:
     definitions: Dict[str, Union[EnumDefinition, StructDefinition, TableDefinition]]
     name: str = "ANONYMOUS_SCHEMA"
+    next_table_id: int = 1
 
     @property
     def structs(self):
@@ -760,13 +825,20 @@ class Schema:
     def resolve_types(self):
         for definition in self.definitions.values():
             definition.resolve_types(self)
+        
+        for definition in self.structs:
+            definition.table_id = self.next_table_id
+            self.next_table_id += 1
+            next_field_id = 1
+            for member in definition.members:
+                member.field_id = next_field_id
+                next_field_id += 1
 
     def validate(self):
         for definition in self.definitions.values():
             definition.validate()
 
     def generate_c_header(self):
-        i = 0
         return (
             "#ifndef _SERIALIB_{}_H\n".format(self.name) +
             "#define _SERIALIB_{}_H\n".format(self.name) +
@@ -778,7 +850,7 @@ class Schema:
             "typedef enum TableType_e {\n" +
             "    TABLE_TYPE_INVALID = 0,\n    " +
             indent(',\n'.join(
-                "TABLE_TYPE_{} = {}".format(d.name, i := i+1)
+                "TABLE_TYPE_{} = {}".format(d.name, d.table_id)
                 for d in self.structs
             )) +
             "\n} TableType_e;\n\n" +
