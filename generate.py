@@ -223,7 +223,7 @@ class SeriaParser(Parser):
 @dataclass
 class Primitive:
     c_name: str
-    bit_width: Optional[int] = None
+    byte_width: Optional[int] = None
     signed: Optional[bool] = None
 
     @property
@@ -237,14 +237,14 @@ class Primitive:
 class Primitives:
     Boolean = Primitive(c_name="bool")
     String = Primitive(c_name="char *")
-    UInt8 = Primitive(c_name="uint8_t", bit_width=1, signed=False)
-    Int8 = Primitive(c_name="int8_t", bit_width=1, signed=True)
-    UInt16 = Primitive(c_name="uint16_t", bit_width=2, signed=False)
-    Int16 = Primitive(c_name="int16_t", bit_width=2, signed=True)
-    UInt32 = Primitive(c_name="uint32_t", bit_width=4, signed=False)
-    Int32 = Primitive(c_name="int32_t", bit_width=4, signed=True)
-    UInt64 = Primitive(c_name="uint64_t", bit_width=8, signed=False)
-    Int64 = Primitive(c_name="int64_t", bit_width=8, signed=True)
+    UInt8 = Primitive(c_name="uint8_t", byte_width=1, signed=False)
+    Int8 = Primitive(c_name="int8_t", byte_width=1, signed=True)
+    UInt16 = Primitive(c_name="uint16_t", byte_width=2, signed=False)
+    Int16 = Primitive(c_name="int16_t", byte_width=2, signed=True)
+    UInt32 = Primitive(c_name="uint32_t", byte_width=4, signed=False)
+    Int32 = Primitive(c_name="int32_t", byte_width=4, signed=True)
+    UInt64 = Primitive(c_name="uint64_t", byte_width=8, signed=False)
+    Int64 = Primitive(c_name="int64_t", byte_width=8, signed=True)
 
 
 BUILTIN_TYPES = {
@@ -486,24 +486,45 @@ class StructMember(SchemaElement):
         self.set_parameter("field_id", self.field_id)
 
         self.start_block("if (s->{name}_present) {{")
-        self.add_line("((uint16_t *)(*buffer))[1] += 1;")
+        self.add_line("((uint16_t *)buffer)[1] += 1;")
 
         if isinstance(self.type, (TableDefinition, StructDefinition)):
-            pass
+            self.add_line("((uint16_t*)(buffer + bytes_written))[0] = {field_id};")
+            self.add_line("bytes_written += 2;")
+            self.add_line("uint8_t *child_buffer;")
+            self.add_line("size_t child_buffer_size;")
+            self.add_line("{type_name}_serialize(s->{name}, &child_buffer, &buffer_size);")
+            self.add_line("memcpy(buffer + bytes_written, child_buffer, child_buffer_size);")
+            self.add_line("bytes_written += child_buffer_size;")
+            self.add_line("free(child_buffer);")
         elif isinstance(self.type, EnumDefinition):
-            pass
+            self.add_line("((uint16_t*)(buffer + bytes_written))[0] = {field_id};")
+            self.add_line("bytes_written += 2;")
+            #TODO Continue Here
+            self.add_line("s->{name}")
         elif self.type in INTEGER_PRIMITIVES:
             pass
         elif self.type is Primitives.String:
-            self.start_block("if (strlen(s->{name}) > 255) {{")
-            self.add_line("*buffer_size += 2 + sizeof(uint32_t) + strlen(s_>{name});")
-            self.add_line("*buffer = realloc(*buffer, *buffer_size);")
-            self.add_line("((uint16_t*)((*buffer) + buffer_size))[0] = {field_id} | 0x8000;")
+            self.add_line("size_t string_size = strlen(s->{name});")
+            self.start_block("if (string_size > 255) {{")
+            self.add_line("buffer_size += 2 + sizeof(uint32_t) + string_size;")
+            self.add_line("buffer = realloc(buffer, buffer_size);")
+            self.add_line("((uint16_t*)(buffer + bytes_written))[0] = {field_id} | 0x8000;")
+            self.add_line("bytes_written += 2;")
+            self.add_line("((uint32_t*)buffer + bytes_written)[0] = string_size;")
+            self.add_line("bytes_written += 4;")
+            self.add_line("memcpy(buffer + bytes_written, s->{name}, string_size);")
+            self.add_line("bytes_written += string_size;")
             self.end_block("}}")
-
             self.start_block("else {{")
-            self.add_line("*buffer_size += 2 + sizeof(uint8_t) + strlen(s_>{name});")
-            self.add_line("*buffer = realloc(*buffer, *buffer_size);")
+            self.add_line("buffer_size += 2 + sizeof(uint8_t) + strlen(s->{name});")
+            self.add_line("buffer = realloc(buffer, buffer_size);")
+            self.add_line("((uint16_t*)(buffer + bytes_written))[0] = {field_id};")
+            self.add_line("bytes_written += 2;")
+            self.add_line("((uint8_t*)buffer + bytes_written)[0] = string_size;")
+            self.add_line("bytes_written += 1;")
+            self.add_line("memcpy(buffer + bytes_written, s->{name}, string_size);")
+            self.add_line("bytes_written += string_size;")
             self.end_block("}}")
         elif self.type is Primitives.Boolean:
             pass
@@ -781,18 +802,21 @@ class StructDefinition(SchemaElement):
         self.skip_line()
         
         # Serialize
-        self.start_block("bool {name}_serialize({name}_t *s, uint8_t **buffer, size_t *buffer_size) {{")
+        self.start_block("bool {name}_serialize({name}_t *s, uint8_t **out_buffer, size_t *out_buffer_size) {{")
         # Pack up the table_id based on the table's position in the schema
         # gonna have to figure that out somehow
-        self.add_line("*buffer = malloc(4);")
-        self.add_line("((uint16_t *)(*buffer))[0] = (uint16_t)TABLE_TYPE_{name};")
-        self.add_line("((uint16_t *)(*buffer))[1] = 0;")
-        self.add_line("*buffer_size = 4;")
+        self.add_line("uint8_t *buffer = malloc(4);")
+        self.add_line("size_t buffer_size = 4;")
+        self.add_line("size_t bytes_written = 4;")
+        self.add_line("((uint16_t *)buffer)[0] = (uint16_t)TABLE_TYPE_{name};")
+        self.add_line("((uint16_t *)buffer)[1] = 0;")
         # Iterate over the members of that schema, checking each field
         for member in self.members:
             member.generate_member_serialize(self)
         # If it's present, move a memory marker around and slap that shit in
         # rinse repeat until we're done
+        self.add_line("*out_buffer = buffer;")
+        self.add_line("*out_buffer_size = buffer_size;")
         self.end_block("}}")
         self.skip_line()
 
