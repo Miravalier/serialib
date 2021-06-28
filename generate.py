@@ -408,9 +408,18 @@ class StructMember(SchemaElement):
     def generate_signatures(self, parent: Union[StructDefinition, TableDefinition]):
         self.set_parameter("struct", parent.name)
         self.set_parameter("field", self.name)
+        params = {
+            parent.name: """
+                Any {struct}_t, returned from one of `{struct}_new()`, `{struct}_copy()`,
+                or `{struct}_deserialize()`.
+            """
+        }
         if self.vector and self.vector_size is None:
+            if isinstance(self.type, StructDefinition) or self.type is Primitives.String:
+                params[self.name] = "The {field} to store in the given {struct}."
             self.add_c_comment(
-                comment="TODO write this comment",
+                comment="Stores a copy of the given {field} in the given {struct}.",
+                **params
             )
             self.add_line("bool {struct}_set_{field}({struct}_t *s, " + self.const_type + ", size_t {field}_length);")
             self.skip_line()
@@ -422,7 +431,8 @@ class StructMember(SchemaElement):
             self.skip_line()
         else:
             self.add_c_comment(
-                comment="TODO write this comment",
+                comment="Stores a copy of the given {field} in the given {struct}.",
+                **params
             )
             self.add_line("bool {struct}_set_{field}({struct}_t *s, " + self.const_type + ");")
             self.skip_line()
