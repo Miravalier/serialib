@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sys
 import textwrap
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Union
@@ -293,6 +294,18 @@ INTEGER_PRIMITIVES = {
 
 
 class SchemaElement:
+    def pop_line(self, *args, **kwargs):
+        return self.schema.pop_line(*args, **kwargs)
+
+    def add_c_comment(self, *args, **kwargs):
+        self.schema.add_c_comment(*args, **kwargs)
+
+    def add_py_comment(self, *args, **kwargs):
+        self.schema.add_py_comment(*args, **kwargs)
+
+    def add_comment(self, *args, **kwargs):
+        self.schema.add_comment(*args, **kwargs)
+
     def push_parameters(self, *args, **kwargs):
         self.schema.push_parameters(*args, **kwargs)
 
@@ -396,11 +409,29 @@ class StructMember(SchemaElement):
         self.set_parameter("struct", parent.name)
         self.set_parameter("field", self.name)
         if self.vector and self.vector_size is None:
+            self.add_c_comment(
+                comment="TODO write this comment",
+            )
             self.add_line("bool {struct}_set_{field}({struct}_t *s, " + self.const_type + ", size_t {field}_length);")
+            self.skip_line()
+
+            self.add_c_comment(
+                comment="TODO write this comment",
+            )
             self.add_line("bool {struct}_get_{field}({struct}_t *s, " + self.pointer_type + ", size_t *{field}_length);")
+            self.skip_line()
         else:
+            self.add_c_comment(
+                comment="TODO write this comment",
+            )
             self.add_line("bool {struct}_set_{field}({struct}_t *s, " + self.const_type + ");")
+            self.skip_line()
+
+            self.add_c_comment(
+                comment="TODO write this comment",
+            )
             self.add_line("bool {struct}_get_{field}({struct}_t *s, " + self.pointer_type + ");")
+            self.skip_line()
 
     def generate_free(self, parent: Union[StructDefinition, TableDefinition]):
         self.push_parameters()
@@ -457,7 +488,7 @@ class StructMember(SchemaElement):
             self.start_block("if (strlen(s->{name}) > 255) {{")
             self.add_line("*buffer_size += 2 + sizeof(uint32_t) + strlen(s_>{name});")
             self.add_line("*buffer = realloc(*buffer, *buffer_size);")
-            self.add_line("((uint16_t*)((*buffer) + buffer_size))[0] = {field_id} | 0x8000")
+            self.add_line("((uint16_t*)((*buffer) + buffer_size))[0] = {field_id} | 0x8000;")
             self.end_block("}}")
 
             self.start_block("else {{")
@@ -665,12 +696,45 @@ class StructDefinition(SchemaElement):
 
     def generate_signatures(self):
         self.set_parameter("name", self.name)
+
+        self.add_c_comment(
+            comment="Creates a new {name}_t on the heap.",
+            return_comment="A newly allocated {name}_t. Must be freed by the caller with `{name}_free()`."
+        )
         self.add_line("{name}_t *{name}_new(void);")
+        self.skip_line()
+
+        self.add_c_comment(
+            comment="Creates a copy of an existing {name}_t.",
+            return_comment="A newly allocated {name}_t. Must be freed by the caller with `{name}_free()`."
+        )
         self.add_line("{name}_t *{name}_copy(const {name}_t *s);")
+        self.skip_line()
+
+        self.add_c_comment(
+            comment="Deallocates an existing {name}_t that was previously allocated with `{name}_new()`.",
+        )
         self.add_line("void {name}_free({name}_t *s);")
+        self.skip_line()
+
+        self.add_c_comment(
+            comment="TODO write this comment",
+        )
         self.add_line("bool {name}_serialize({name}_t *s, uint8_t **buffer, size_t *buffer_size);")
+        self.skip_line()
+
+        self.add_c_comment(
+            comment="TODO write this comment",
+        )
         self.add_line("{name}_t *{name}_deserialize(const uint8_t *buffer, size_t buffer_size);")
+        self.skip_line()
+
+        self.add_c_comment(
+            comment="TODO write this comment",
+        )
         self.add_line("bool {name}_verify(const uint8_t *buffer, size_t buffer_size);")
+        self.skip_line()
+
         for member in self.members:
             member.generate_signatures(self)
 
@@ -794,6 +858,39 @@ class Schema:
     format_parameters: Dict[str, str] = field(default_factory=dict)
     format_parameters_stack: List[Dict[str, str]] = field(default_factory=list)
 
+    def add_c_comment(self, comment="", **kwargs):
+        self.add_comment(comment, opener="/**", line_start=" *", closer=" */", **kwargs)
+
+    def add_py_comment(self, comment="", **kwargs):
+        self.add_comment(comment, opener="\"\"\"", line_start="   ", closer="\"\"\"", **kwargs)
+
+    def add_comment(self, comment="", *, return_comment=None, opener, line_start, closer, **kwargs):
+        self.add_line(opener)
+        for line in textwrap.wrap(re.sub('\s+', ' ', comment.strip()), width=80):
+            self.add_line(line_start + " " + line)
+
+        self.add_line(line_start)
+
+        for param, comment in kwargs.items():
+            padding_length = len(param) + len("@param ")
+            for i, line in enumerate(textwrap.wrap(re.sub('\s+', ' ', comment.strip()), width=80)):
+                if i == 0:
+                    self.add_line("{} @param {} {}".format(line_start, param, line))
+                else:
+                    self.add_line("{} {} {}".format(line_start, " " * padding_length, line))
+            self.add_line(line_start)
+
+        if return_comment:
+            for i, line in enumerate(textwrap.wrap(re.sub('\s+', ' ', return_comment.strip()), width=80)):
+                if i == 0:
+                    self.add_line("{} @return {}".format(line_start, line))
+                else:
+                    self.add_line("{}         {}".format(line_start, line))
+        else:
+            self.pop_line()
+
+        self.add_line(closer)
+
     def set_parameter(self, key, value):
         self.format_parameters[key] = value
 
@@ -811,6 +908,9 @@ class Schema:
         self.current_output.append(
             self.indentation * self.indentation_level + code.format(**self.format_parameters)
         )
+
+    def pop_line(self):
+        return self.current_output.pop()
 
     def skip_line(self):
         self.current_output.append('')
