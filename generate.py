@@ -403,43 +403,92 @@ class StructMember(SchemaElement):
             self.add_line("size_t {}_length;".format(self.name))
 
     def generate_typedef_present(self):
-        self.add_line("bool {}_present;".format(self.name))
+        self.add_line("bool {}_present: 1;".format(self.name))
 
     def generate_signatures(self, parent: Union[StructDefinition, TableDefinition]):
         self.set_parameter("struct", parent.name)
         self.set_parameter("field", self.name)
+        self.set_parameter("type_name", self.type.name)
+        self.set_parameter(
+            "default",
+            '"{}"'.format(self.default)
+            if isinstance(self.default, str) else
+            self.default
+        )
         params = {
-            parent.name: """
+            "s": """
                 Any {struct}_t, returned from one of `{struct}_new()`, `{struct}_copy()`,
                 or `{struct}_deserialize()`.
-            """
+            """,
         }
+        if self.vector:
+            if self.vector_size is None:
+                params[self.name] = "Array of `{field}_length` {type_name} to store in the {struct}."
+            else:
+                params[self.name] = "Array of " + str(self.vector_size) + " {type_name} to store in the {struct}."
+        else:
+            params[self.name] = "{type_name} to store in the {struct}."
         if self.vector and self.vector_size is None:
             if isinstance(self.type, StructDefinition) or self.type is Primitives.String:
-                params[self.name] = "The {field} to store in the given {struct}."
+                params[self.name] = "{type_name} to store in the {field} field of the given {struct}."
             self.add_c_comment(
-                comment="Stores a copy of the given {field} in the given {struct}.",
+                comment="Store a copy of the given {type_name} array in the given {struct}.",
+                return_comment="True on success, false if memory allocation fails.",
                 **params
             )
             self.add_line("bool {struct}_set_{field}({struct}_t *s, " + self.const_type + ", size_t {field}_length);")
             self.skip_line()
 
-            self.add_c_comment(
-                comment="TODO write this comment",
-            )
+            if self.default:
+                self.add_c_comment(
+                    comment="""
+                        Retrieve the {field} field from the given {struct} if that field is present,
+                        or the default value ({default}) if the {field} field is not present.
+                    """,
+                    return_comment="Always returns true."
+                )
+            else:
+                self.add_c_comment(
+                    comment="Retrieve the {field} field from the given {struct}.",
+                    return_comment="True if the field is present, false otherwise."
+                )
             self.add_line("bool {struct}_get_{field}({struct}_t *s, " + self.pointer_type + ", size_t *{field}_length);")
             self.skip_line()
         else:
-            self.add_c_comment(
-                comment="Stores a copy of the given {field} in the given {struct}.",
-                **params
-            )
+            if self.vector:
+                self.add_c_comment(
+                    comment="Store a copy of the given {type_name} array in the {field} field of the given {struct}.",
+                    return_comment="True on success, false if memory allocation fails.",
+                    **params
+                )
+            elif isinstance(self.type, StructDefinition) or self.type is Primitives.String:
+                self.add_c_comment(
+                    comment="Store a copy of the given {type_name} in the {field} field of the given {struct}.",
+                    return_comment="True on success, false if memory allocation fails.",
+                    **params
+                )
+            else:
+                self.add_c_comment(
+                    comment="Store the given {type_name} in the {field} field of the given {struct}.",
+                    return_comment="True on success, false if memory allocation fails.",
+                    **params
+                )
             self.add_line("bool {struct}_set_{field}({struct}_t *s, " + self.const_type + ");")
             self.skip_line()
 
-            self.add_c_comment(
-                comment="TODO write this comment",
-            )
+            if self.default:
+                self.add_c_comment(
+                    comment="""
+                        Retrieve the {field} field from the given {struct} if that field is present,
+                        or the default value ({default}) if the {field} field is not present.
+                    """,
+                    return_comment="Always returns true."
+                )
+            else:
+                self.add_c_comment(
+                    comment="Retrieve the {field} field from the given {struct}.",
+                    return_comment="True if the field is present, false otherwise."
+                )
             self.add_line("bool {struct}_get_{field}({struct}_t *s, " + self.pointer_type + ");")
             self.skip_line()
 
@@ -730,38 +779,46 @@ class StructDefinition(SchemaElement):
 
         self.add_c_comment(
             comment="Creates a new {name}_t on the heap.",
-            return_comment="A newly allocated {name}_t. Must be freed by the caller with `{name}_free()`."
+            return_comment="A newly allocated {name}_t. Must be freed with `{name}_free()`."
         )
         self.add_line("{name}_t *{name}_new(void);")
         self.skip_line()
 
         self.add_c_comment(
             comment="Creates a copy of an existing {name}_t.",
-            return_comment="A newly allocated {name}_t. Must be freed by the caller with `{name}_free()`."
+            return_comment="A newly allocated {name}_t. Must be freed with `{name}_free()`."
         )
         self.add_line("{name}_t *{name}_copy(const {name}_t *s);")
         self.skip_line()
 
         self.add_c_comment(
-            comment="Deallocates an existing {name}_t that was previously allocated with `{name}_new()`.",
+            comment="""
+                Deallocates an existing {name}_t that was previously allocated with `{name}_new()`,
+                `{name}_copy()`, or `{name}_deserialize()`.
+            """
         )
         self.add_line("void {name}_free({name}_t *s);")
         self.skip_line()
 
         self.add_c_comment(
-            comment="TODO write this comment",
+            comment="Serialize a {name}_t into a buffer. The {name}_t is unchanged.",
+            s="The {name}_t to serialize.",
+            buffer="Place to store the newly allocated buffer.",
+            buffer_size="Place to store the size of the newly allocated buffer.",
+            return_comment="True on success, false if memory allocation fails.",
         )
         self.add_line("bool {name}_serialize({name}_t *s, uint8_t **buffer, size_t *buffer_size);")
         self.skip_line()
 
         self.add_c_comment(
-            comment="TODO write this comment",
+            comment="Parse a buffer that was created by serializing a {name}_t and re-create the {name}_t.",
+            return_comment="A newly allocated {name}_t. Must be freed with `{name}_free()`."
         )
         self.add_line("{name}_t *{name}_deserialize(const uint8_t *buffer, size_t buffer_size);")
         self.skip_line()
 
         self.add_c_comment(
-            comment="TODO write this comment",
+            return_comment="True if the given buffer holds a valid serialized {name}_t, false otherwise.",
         )
         self.add_line("bool {name}_verify(const uint8_t *buffer, size_t buffer_size);")
         self.skip_line()
@@ -900,10 +957,11 @@ class Schema:
 
     def add_comment(self, comment="", *, return_comment=None, opener, line_start, closer, **kwargs):
         self.add_line(opener)
-        for line in textwrap.wrap(re.sub('\s+', ' ', comment.strip()), width=80):
-            self.add_line(line_start + " " + line)
+        if comment:
+            for line in textwrap.wrap(re.sub('\s+', ' ', comment.strip()), width=80):
+                self.add_line(line_start + " " + line)
 
-        self.add_line(line_start)
+            self.add_line(line_start)
 
         for param, comment in kwargs.items():
             padding_length = len(param) + len("@param ")
@@ -1016,8 +1074,20 @@ class Schema:
             definition.generate_typedefs()
             self.skip_line()
 
-        self.add_line("TableType_e determine_table_type(const uint8_t *buffer, size_t buffer_size);")
-        self.skip_line()
+        if self.structs:
+            example_definition = next(iter(self.structs))
+            self.set_parameter("example", example_definition.name)
+
+            self.add_c_comment(
+                comment="""
+                    Checks a buffer that has been serialized with some <table/struct>_serialize() function
+                    and returns the TableType_e that corresponds with that table. For example, if {example}_serialize()
+                    was used to create the buffer, this function will return TABLE_TYPE_{example}. If the buffer
+                    cannot be any of the known tables, TABLE_TYPE_INVALID is returned instead.
+                """
+            )
+            self.add_line("TableType_e determine_table_type(const uint8_t *buffer, size_t buffer_size);")
+            self.skip_line()
 
         for definition in self.structs:
             definition.generate_signatures()
