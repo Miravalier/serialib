@@ -1074,20 +1074,23 @@ class Schema:
             definition.generate_typedefs()
             self.skip_line()
 
-        if self.structs:
+        try:
             example_definition = next(iter(self.structs))
             self.set_parameter("example", example_definition.name)
 
             self.add_c_comment(
                 comment="""
-                    Checks a buffer that has been serialized with some <table/struct>_serialize() function
-                    and returns the TableType_e that corresponds with that table. For example, if {example}_serialize()
-                    was used to create the buffer, this function will return TABLE_TYPE_{example}. If the buffer
-                    cannot be any of the known tables, TABLE_TYPE_INVALID is returned instead.
+                    Checks a buffer that has been serialized with one of the <table/struct>_serialize() functions
+                    and returns the TableType_e that corresponds with the table used to create the buffer.
+                    For example, if {example}_serialize() was used to create the buffer, this function will return
+                    TABLE_TYPE_{example}. If the buffer cannot be any of the known tables, TABLE_TYPE_INVALID is
+                    returned instead.
                 """
             )
             self.add_line("TableType_e determine_table_type(const uint8_t *buffer, size_t buffer_size);")
             self.skip_line()
+        except StopIteration:
+            pass
 
         for definition in self.structs:
             definition.generate_signatures()
