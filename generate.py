@@ -702,6 +702,35 @@ class StructMember(SchemaElement):
 
         self.pop_parameters()
 
+    def generate_python(self):
+        """
+        Struct Member
+        """
+        self.set_parameter("field", self.name)
+        self.set_parameter("type_name", self.type.name)
+
+        if self.vector:
+            if self.vector_size:
+                if isinstance(self.type, (StructDefinition, TableDefinition)):
+                    self.add_line("{field}: List[{type_name}] = None")
+                elif self.type is Primitives.String:
+                    self.add_line("{field}: List[str] = None")
+                else:
+                    self.add_line("{field}: List[int] = None")
+            else:
+                if isinstance(self.type, (StructDefinition, TableDefinition)):
+                    self.add_line("{field}: List[{type_name}] = field(default_factory=list)")
+                elif self.type is Primitives.String:
+                    self.add_line("{field}: List[str] = field(default_factory=list)")
+                else:
+                    self.add_line("{field}: List[int] = field(default_factory=list)")
+        elif isinstance(self.type, (StructDefinition, TableDefinition)):
+            self.add_line("{field}: {type_name} = None")
+        elif self.type is Primitives.String:
+            self.add_line("{field}: str = None")
+        else:
+            self.add_line("{field}: int = None")
+
 
 @dataclass
 class EnumMember(SchemaElement):
@@ -894,7 +923,27 @@ class StructDefinition(SchemaElement):
             member.generate_get_set(self)
 
     def generate_python(self):
-        return ""
+        """
+        Struct Definition
+        """
+        self.set_parameter("cls", self.name)
+
+        self.add_line("@dataclass")
+        self.start_block("class {cls}:")
+
+        for member in self.members:
+            member.generate_python()
+
+        if self.members:
+            self.skip_line()
+
+        self.add_line("@classmethod")
+        self.start_block("def deserialize(cls):")
+        self.add_line("return None")
+        self.end_block()
+
+        self.end_block()
+        self.skip_line()
 
 
 class TableDefinition(StructDefinition):
@@ -935,7 +984,9 @@ class EnumDefinition(SchemaElement):
         self.end_block("}} {name}_e;")
 
     def generate_python(self):
-        return ""
+        """
+        Enum Definition
+        """
 
 
 @dataclass
@@ -997,9 +1048,12 @@ class Schema:
         self.format_parameters = self.format_parameters_stack.pop()
 
     def add_line(self, code):
-        self.current_output.append(
-            self.indentation * self.indentation_level + code.format(**self.format_parameters)
-        )
+        if code:
+            self.current_output.append(
+                self.indentation * self.indentation_level + code.format(**self.format_parameters)
+            )
+        else:
+            self.current_output.append('')
 
     def pop_line(self):
         return self.current_output.pop()
@@ -1013,13 +1067,15 @@ class Schema:
     def end_indent(self):
         self.indentation_level -= 1
 
-    def start_block(self, code="{{"):
-        self.add_line(code)
+    def start_block(self, code=""):
+        if code:
+            self.add_line(code)
         self.indentation_level += 1
 
-    def end_block(self, code="}}"):
+    def end_block(self, code=""):
         self.indentation_level -= 1
-        self.add_line(code)
+        if code:
+            self.add_line(code)
 
     def output(self):
         result = "\n".join(self.current_output) + "\n"
@@ -1115,8 +1171,35 @@ class Schema:
         return self.output()
 
     def generate_python(self):
+        """
+        Schema
+        """
+        self.add_line("from dataclasses import dataclass, field")
+        self.add_line("from typing import Union")
+        self.skip_line()
+
+        self.start_block("TABLE_ID_MAP = {{")
+        for definition in self.structs:
+            self.add_line("{}: {},".format(definition.table_id, definition.name))
+        self.end_block("}}")
+        self.skip_line()
+
         for definition in self.definitions.values():
             definition.generate_python()
+
+        self.start_block("def deserialize(buf: Union[bytes, bytearray, memoryview]):")
+        self.add_line("view = memoryview(buf)")
+        self.add_line("table_id = int.from_bytes(view[0:2], 'big', signed=False)")
+
+        self.start_block("try:")
+        self.add_line("cls = TABLE_ID_MAP[table_id]")
+        self.end_block()
+        self.start_block("except KeyError:")
+        self.add_line("raise ValueError('Unrecognized Table ID')")
+        self.end_block()
+
+        self.add_line("return cls.deserialize(buf)")
+        self.end_block()
 
         return self.output()
 
