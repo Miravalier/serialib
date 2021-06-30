@@ -733,34 +733,149 @@ class StructMember(SchemaElement):
 
         self.pop_parameters()
 
-    def generate_python(self):
+    def generate_python_serialize(self):
         """
-        Struct Member
+        Struct Member - Serialize
         """
-        self.set_parameter("field", self.name)
+        self.set_parameter("field_id", self.field_id)
+        self.add_line("field_id = {field_id}")
+        if self.vector:
+            if self.vector_size is None:
+                self.add_line("field_length = len(self.{field})")
+                self.start_block("if field_length > 0xFF:")
+                self.add_line("buf.extend(uint16(field_id | 0x8000))")
+                self.add_line("buf.extend(uint32(field_length))")
+                self.end_block()
+
+                self.start_block("else:")
+                self.add_line("buf.extend(uint16(field_id))")
+                self.add_line("buf.extend(uint8(field_length))")
+                self.end_block()
+            else:
+                self.set_parameter("vector_size", self.vector_size)
+                self.add_line("field_length = {vector_size}")
+
+            if self.type is Primitives.Boolean:
+                self.add_line("data = bytearray(((field_length - 1) // 8) + 1)")
+
+            self.start_block("for i in range(field_length):")
+            if isinstance(self.type, (StructDefinition, TableDefinition)):
+                self.add_line("child_buf = self.{field}[i].serialize()")
+                self.add_line("child_length = len(child_buf)")
+                self.start_block("if child_length > 0xFFFF:")
+                self.add_line("buf.extend(uint8(0xFF))")
+                self.add_line("buf.extend(uint32(child_length))")
+                self.end_block()
+                self.start_block("elif child_length >= 0xFE:")
+                self.add_line("buf.extend(uint8(0xFE))")
+                self.add_line("buf.extend(uint16(child_length))")
+                self.end_block()
+                self.start_block("else:")
+                self.add_line("buf.extend(uint8(child_length))")
+                self.end_block()
+                self.add_line("buf.extend(child_buf)")
+            elif isinstance(self.type, EnumDefinition):
+                self.set_parameter("bit_width", self.type.size.byte_width*8)
+                self.add_line("buf.extend(uint{bit_width}(self.{field}[i]))")
+            elif self.type is Primitives.String:
+                self.add_line("string_length = len(self.{field}[i])")
+                self.start_block("if string_length > 0xFFFF:")
+                self.add_line("buf.extend(uint8(0xFF))")
+                self.add_line("buf.extend(uint32(string_length))")
+                self.end_block()
+                self.start_block("elif string_length >= 0xFE:")
+                self.add_line("buf.extend(uint8(0xFE))")
+                self.add_line("buf.extend(uint16(string_length))")
+                self.end_block()
+                self.start_block("else:")
+                self.add_line("buf.extend(uint8(string_length))")
+                self.end_block()
+                self.add_line("buf.extend(self.{field}[i].encode('utf-8'))")
+            elif self.type is Primitives.Boolean:
+                self.start_block("if self.{field}[i]:")
+                self.add_line("data[i//8] |= 1 << (7 - i & 7)")
+                self.end_block()
+            elif self.type in INTEGER_PRIMITIVES:
+                self.set_parameter("bit_width", self.type.byte_width*8)
+                self.add_line("buf.extend(uint{bit_width}(self.{field}[i]))")
+            else:
+                raise TypeError("Unrecognized struct member type")
+            self.end_block()
+
+            if self.type is Primitives.Boolean:
+                self.add_line("buf.extend(data)")
+        else:
+            if isinstance(self.type, (StructDefinition, TableDefinition)):
+                self.add_line("buf.extend(uint16(field_id))")
+                self.add_line("buf.extend(self.{field}.serialize())")
+            elif isinstance(self.type, EnumDefinition):
+                self.set_parameter("bit_width", self.type.size.byte_width*8)
+                self.add_line("buf.extend(uint16(field_id))")
+                self.add_line("buf.extend(uint{bit_width}(self.{field}))")
+            elif self.type is Primitives.String:
+                self.start_block("if len(self.{field}) > 0xFF:")
+                self.add_line("buf.extend(uint16(field_id | 0x8000))")
+                self.add_line("buf.extend(uint32(len(self.{field})))")
+                self.end_block()
+
+                self.start_block("else:")
+                self.add_line("buf.extend(uint16(field_id))")
+                self.add_line("buf.extend(uint8(len(self.{field})))")
+                self.end_block()
+
+                self.add_line("buf.extend(self.{field}.encode('utf-8'))")
+            elif self.type is Primitives.Boolean:
+                self.start_block("if self.{field}:")
+                self.add_line("buf.extend(uint16(field_id | 0x8000))")
+                self.end_block()
+                self.start_block("else:")
+                self.add_line("buf.extend(uint16(field_id))")
+                self.end_block()
+            elif self.type in INTEGER_PRIMITIVES:
+                self.set_parameter("bit_width", self.type.byte_width*8)
+                self.add_line("buf.extend(uint16(field_id))")
+                self.add_line("buf.extend(uint{bit_width}(self.{field}))")
+            else:
+                raise TypeError("Unrecognized struct member type")
+
+    def generate_python_deserialize(self):
+        """
+        Struct Member - Deserialize
+        """
+
+    def generate_python_declaration(self):
+        """
+        Struct Member - Field Declaration
+        """
         self.set_parameter("type_name", self.type.name)
 
         if self.vector:
             if self.vector_size:
-                if isinstance(self.type, (StructDefinition, TableDefinition)):
-                    self.add_line("{field}: List[{type_name}] = None")
+                if isinstance(self.type, (StructDefinition, TableDefinition, EnumDefinition)):
+                    self.add_line("{field}: Optional[List[{type_name}]] = None")
                 elif self.type is Primitives.String:
-                    self.add_line("{field}: List[str] = None")
+                    self.add_line("{field}: Optional[List[str]] = None")
+                elif self.type is Primitives.Boolean:
+                    self.add_line("{field}: Optional[List[bool]] = None")
                 else:
-                    self.add_line("{field}: List[int] = None")
+                    self.add_line("{field}: Optional[List[int]] = None")
             else:
-                if isinstance(self.type, (StructDefinition, TableDefinition)):
+                if isinstance(self.type, (StructDefinition, TableDefinition, EnumDefinition)):
                     self.add_line("{field}: List[{type_name}] = field(default_factory=list)")
                 elif self.type is Primitives.String:
                     self.add_line("{field}: List[str] = field(default_factory=list)")
+                elif self.type is Primitives.Boolean:
+                    self.add_line("{field}: List[bool] = field(default_factory=list)")
                 else:
                     self.add_line("{field}: List[int] = field(default_factory=list)")
-        elif isinstance(self.type, (StructDefinition, TableDefinition)):
-            self.add_line("{field}: {type_name} = None")
+        elif isinstance(self.type, (StructDefinition, TableDefinition, EnumDefinition)):
+            self.add_line("{field}: Optional[{type_name}] = None")
         elif self.type is Primitives.String:
-            self.add_line("{field}: str = None")
+            self.add_line("{field}: Optional[str] = None")
+        elif self.type is Primitives.Boolean:
+            self.add_line("{field}: Optional[bool] = None")
         else:
-            self.add_line("{field}: int = None")
+            self.add_line("{field}: Optional[int] = None")
 
 
 @dataclass
@@ -958,22 +1073,48 @@ class StructDefinition(SchemaElement):
         Struct Definition
         """
         self.set_parameter("cls", self.name)
+        self.set_parameter("table_id", self.table_id)
 
         self.add_line("@dataclass")
         self.start_block("class {cls}:")
 
         for member in self.members:
-            member.generate_python()
+            self.set_parameter("field", member.name)
+            member.generate_python_declaration()
 
         if self.members:
             self.skip_line()
 
+        self.start_block("def serialize(self) -> bytes:")
+        self.add_line("buf = bytearray()")
+        for member in self.members:
+            self.set_parameter("field", member.name)
+            if member.vector and member.vector_size is None:
+                self.start_block("if len(self.{field}) != 0:")
+            else:
+                self.start_block("if self.{field} is not None:")
+            member.generate_python_serialize()
+            self.end_block()
+        self.add_line("return bytes(buf)")
+        self.end_block()
+        self.skip_line()
+
         self.add_line("@classmethod")
-        self.start_block("def deserialize(cls):")
-        self.add_line("return None")
+        self.start_block("def deserialize(cls, buf: Union[bytes, bytearray]) -> {cls}:")
+        self.add_line("table_id = unsigned_int(buf[0:2])")
+        self.start_block("if table_id != {table_id}:")
+        self.add_line("raise ValueError('Invalid table ID {{}}').format(table_id)")
+        self.end_block()
+        self.add_line("offset += 2")
+        self.add_line("table = cls()")
+        for member in self.members:
+            self.set_parameter("field", member.name)
+            member.generate_python_deserialize()
+        self.add_line("return table")
         self.end_block()
 
         self.end_block()
+        self.skip_line()
         self.skip_line()
 
 
@@ -1018,6 +1159,13 @@ class EnumDefinition(SchemaElement):
         """
         Enum Definition
         """
+        self.set_parameter("cls", self.name)
+        self.start_block("class {cls}(IntEnum):")
+        for member in self.members:
+            self.add_line("{} = {}".format(member.name, member.value))
+        self.end_block()
+        self.skip_line()
+        self.skip_line()
 
 
 @dataclass
@@ -1206,22 +1354,85 @@ class Schema:
         """
         Schema
         """
+        self.add_line("from __future__ import annotations")
         self.add_line("from dataclasses import dataclass, field")
-        self.add_line("from typing import Union")
+        self.add_line("from enum import IntEnum")
+        self.add_line("from typing import Union, List, Optional")
         self.skip_line()
+        self.skip_line()
+
+        self.start_block("def uint8(value):")
+        self.add_line("return value.to_bytes(1, 'big', signed=False)")
+        self.end_block()
+        self.skip_line()
+        self.skip_line()
+
+        self.start_block("def uint16(value):")
+        self.add_line("return value.to_bytes(2, 'big', signed=False)")
+        self.end_block()
+        self.skip_line()
+        self.skip_line()
+
+        self.start_block("def uint32(value):")
+        self.add_line("return value.to_bytes(4, 'big', signed=False)")
+        self.end_block()
+        self.skip_line()
+        self.skip_line()
+
+        self.start_block("def uint64(value):")
+        self.add_line("return value.to_bytes(8, 'big', signed=False)")
+        self.end_block()
+        self.skip_line()
+        self.skip_line()
+
+        self.start_block("def int8(value):")
+        self.add_line("return value.to_bytes(1, 'big', signed=True)")
+        self.end_block()
+        self.skip_line()
+        self.skip_line()
+
+        self.start_block("def int16(value):")
+        self.add_line("return value.to_bytes(2, 'big', signed=True)")
+        self.end_block()
+        self.skip_line()
+        self.skip_line()
+
+        self.start_block("def int32(value):")
+        self.add_line("return value.to_bytes(4, 'big', signed=True)")
+        self.end_block()
+        self.skip_line()
+        self.skip_line()
+
+        self.start_block("def int64(value):")
+        self.add_line("return value.to_bytes(8, 'big', signed=True)")
+        self.end_block()
+        self.skip_line()
+        self.skip_line()
+
+        self.start_block("def unsigned_int(buf):")
+        self.add_line("return int.from_bytes(buf, 'big', signed=False)")
+        self.end_block()
+        self.skip_line()
+        self.skip_line()
+
+        self.start_block("def signed_int(buf):")
+        self.add_line("return int.from_bytes(buf, 'big', signed=True)")
+        self.end_block()
+        self.skip_line()
+        self.skip_line()
+
+        for definition in self.definitions.values():
+            definition.generate_python()
 
         self.start_block("TABLE_ID_MAP = {{")
         for definition in self.structs:
             self.add_line("{}: {},".format(definition.table_id, definition.name))
         self.end_block("}}")
         self.skip_line()
+        self.skip_line()
 
-        for definition in self.definitions.values():
-            definition.generate_python()
-
-        self.start_block("def deserialize(buf: Union[bytes, bytearray, memoryview]):")
-        self.add_line("view = memoryview(buf)")
-        self.add_line("table_id = int.from_bytes(view[0:2], 'big', signed=False)")
+        self.start_block("def deserialize(buf: Union[bytes, bytearray]):")
+        self.add_line("table_id = unsigned_int(buf[0:2])")
 
         self.start_block("try:")
         self.add_line("cls = TABLE_ID_MAP[table_id]")
