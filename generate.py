@@ -341,7 +341,14 @@ class SchemaElement:
 class StructMember(SchemaElement):
     schema: Schema
     name: str
-    type: str
+    type: Union[
+        StructDefinition, 
+        TableDefinition, 
+        EnumDefinition, 
+        Primitives.String, 
+        Primitives.Boolean,
+        Primitives.Int8
+    ]
     default: Union[str, int, None] = None
     vector: bool = False
     vector_size: Optional[int] = None
@@ -366,7 +373,7 @@ class StructMember(SchemaElement):
             return "{}{}*{}".format(self.type.c_name, separator, self.name)
 
     @property
-    def const_type(self):
+    def param_type(self):
         if self.type.c_name.endswith('*'):
             separator = ""
         else:
@@ -376,11 +383,7 @@ class StructMember(SchemaElement):
             type_name = "{}{}*{}".format(self.type.c_name, separator, self.name)
         else:
             type_name = "{}{}{}".format(self.type.c_name, separator, self.name)
-        
-        if '*' in type_name:
-            return 'const {}'.format(type_name)
-        else:
-            return type_name
+        return type_name
 
     @property
     def c_type(self):
@@ -396,6 +399,18 @@ class StructMember(SchemaElement):
                 return "{}{}*{}".format(self.type.c_name, separator, self.name)
         else:
             return "{}{}{}".format(self.type.c_name, separator, self.name)
+
+    @property
+    def cast(self):
+        if self.type.c_name.endswith('*'):
+            separator = ""
+        else:
+            separator = " "
+
+        if self.vector:
+            return "{}{}*".format(self.type.c_name, separator)
+        else:
+            return "{}".format(self.type.c_name)
 
     def generate_typedef_field(self):
         self.add_line("{};".format(self.c_type))
@@ -436,7 +451,7 @@ class StructMember(SchemaElement):
                 return_comment="True on success, false if memory allocation fails.",
                 **params
             )
-            self.add_line("bool {struct}_set_{field}({struct}_t *s, " + self.const_type + ", size_t {field}_length);")
+            self.add_line("bool {struct}_set_{field}({struct}_t *s, " + self.param_type + ", size_t {field}_length);")
             self.skip_line()
 
             if self.default:
@@ -473,7 +488,7 @@ class StructMember(SchemaElement):
                     return_comment="True on success, false if memory allocation fails.",
                     **params
                 )
-            self.add_line("bool {struct}_set_{field}({struct}_t *s, " + self.const_type + ");")
+            self.add_line("bool {struct}_set_{field}({struct}_t *s, " + self.param_type + ");")
             self.skip_line()
 
             if self.default:
@@ -501,16 +516,16 @@ class StructMember(SchemaElement):
             self.add_line("s->{name}_present = false;")
             if self.type is Primitives.String:
                 if self.vector_size is None:
-                    self.start_block("for (size_t i=0; i < s->{name}_length; i++)")
+                    self.start_block("for (size_t i=0; i < s->{name}_length; i++) {{")
                 else:
-                    self.start_block("for (size_t i=0; i < " + str(self.vector_size) + "; i++)")
+                    self.start_block("for (size_t i=0; i < " + str(self.vector_size) + "; i++) {{")
                 self.add_line("free(s->{name}[i]);")
                 self.end_block("}}")
             elif isinstance(self.type, (TableDefinition, StructDefinition)):
                 if self.vector_size is None:
-                    self.start_block("for (size_t i=0; i < s->{name}_length; i++)")
+                    self.start_block("for (size_t i=0; i < s->{name}_length; i++) {{")
                 else:
-                    self.start_block("for (size_t i=0; i < " + str(self.vector_size) + "; i++)")
+                    self.start_block("for (size_t i=0; i < " + str(self.vector_size) + "; i++) {{")
                 self.add_line("{type_name}_free(s->{name}[i]);")
                 self.end_block("}}")
             if self.vector_size is None:
@@ -533,52 +548,67 @@ class StructMember(SchemaElement):
         self.set_parameter("name", self.name)
         self.set_parameter("type_name", self.type.name)
         self.set_parameter("field_id", self.field_id)
-
         self.start_block("if (s->{name}_present) {{")
         self.add_line("((uint16_t *)buffer)[1] += 1;")
 
-        if isinstance(self.type, (TableDefinition, StructDefinition)):
-            self.add_line("((uint16_t*)(buffer + bytes_written))[0] = {field_id};")
-            self.add_line("bytes_written += 2;")
-            self.add_line("uint8_t *child_buffer;")
-            self.add_line("size_t child_buffer_size;")
-            self.add_line("{type_name}_serialize(s->{name}, &child_buffer, &buffer_size);")
-            self.add_line("memcpy(buffer + bytes_written, child_buffer, child_buffer_size);")
-            self.add_line("bytes_written += child_buffer_size;")
-            self.add_line("free(child_buffer);")
-        elif isinstance(self.type, EnumDefinition):
-            self.add_line("((uint16_t*)(buffer + bytes_written))[0] = {field_id};")
-            self.add_line("bytes_written += 2;")
-            #TODO Continue Here
-            self.add_line("s->{name}")
-        elif self.type in INTEGER_PRIMITIVES:
-            pass
-        elif self.type is Primitives.String:
-            self.add_line("size_t string_size = strlen(s->{name});")
-            self.start_block("if (string_size > 255) {{")
-            self.add_line("buffer_size += 2 + sizeof(uint32_t) + string_size;")
-            self.add_line("buffer = realloc(buffer, buffer_size);")
-            self.add_line("((uint16_t*)(buffer + bytes_written))[0] = {field_id} | 0x8000;")
-            self.add_line("bytes_written += 2;")
-            self.add_line("((uint32_t*)buffer + bytes_written)[0] = string_size;")
-            self.add_line("bytes_written += 4;")
-            self.add_line("memcpy(buffer + bytes_written, s->{name}, string_size);")
-            self.add_line("bytes_written += string_size;")
-            self.end_block("}}")
-            self.start_block("else {{")
-            self.add_line("buffer_size += 2 + sizeof(uint8_t) + strlen(s->{name});")
-            self.add_line("buffer = realloc(buffer, buffer_size);")
-            self.add_line("((uint16_t*)(buffer + bytes_written))[0] = {field_id};")
-            self.add_line("bytes_written += 2;")
-            self.add_line("((uint8_t*)buffer + bytes_written)[0] = string_size;")
-            self.add_line("bytes_written += 1;")
-            self.add_line("memcpy(buffer + bytes_written, s->{name}, string_size);")
-            self.add_line("bytes_written += string_size;")
-            self.end_block("}}")
-        elif self.type is Primitives.Boolean:
+        if self.vector:
             pass
         else:
-            raise TypeError("Unrecognized member type '{}'".format(self.type))
+            if isinstance(self.type, (TableDefinition, StructDefinition)):
+                self.add_line("((uint16_t*)(buffer + bytes_written))[0] = {field_id};")
+                self.add_line("bytes_written += 2;")
+                self.add_line("uint8_t *child_buffer;")
+                self.add_line("size_t child_buffer_size;")
+                self.add_line("{type_name}_serialize(s->{name}, &child_buffer, &buffer_size);")
+                self.add_line("memcpy(buffer + bytes_written, child_buffer, child_buffer_size);")
+                self.add_line("bytes_written += child_buffer_size;")
+                self.add_line("free(child_buffer);")
+            elif isinstance(self.type, EnumDefinition):
+                self.set_parameter("byte_width", self.type.size.byte_width)
+                self.set_parameter("c_type", self.type.size.c_name)
+                self.add_line("((uint16_t*)(buffer + bytes_written))[0] = {field_id};")
+                self.add_line("bytes_written += 2;")
+                self.add_line("(({c_type}*)(buffer + bytes_written))[0] = s->{name};")
+                self.add_line("bytes_written += {byte_width};")
+            elif self.type in INTEGER_PRIMITIVES:
+                self.set_parameter("byte_width", self.type.byte_width)
+                self.set_parameter("c_type", self.type.c_name)
+                self.add_line("((uint16_t*)(buffer + bytes_written))[0] = {field_id};")
+                self.add_line("bytes_written += 2;")
+                self.add_line("(({c_type}*)(buffer + bytes_written))[0] = s->{name};")
+                self.add_line("bytes_written += {byte_width};")
+            elif self.type is Primitives.String:
+                self.add_line("size_t string_size = strlen(s->{name});")
+                self.start_block("if (string_size > 255) {{")
+                self.add_line("buffer_size += 2 + sizeof(uint32_t) + string_size;")
+                self.add_line("buffer = realloc(buffer, buffer_size);")
+                self.add_line("((uint16_t*)(buffer + bytes_written))[0] = {field_id} | 0x8000;")
+                self.add_line("bytes_written += 2;")
+                self.add_line("((uint32_t*)(buffer + bytes_written))[0] = string_size;")
+                self.add_line("bytes_written += 4;")
+                self.add_line("memcpy(buffer + bytes_written, s->{name}, string_size);")
+                self.add_line("bytes_written += string_size;")
+                self.end_block("}}")
+                self.start_block("else {{")
+                self.add_line("buffer_size += 2 + sizeof(uint8_t) + strlen(s->{name});")
+                self.add_line("buffer = realloc(buffer, buffer_size);")
+                self.add_line("((uint16_t*)(buffer + bytes_written))[0] = {field_id};")
+                self.add_line("bytes_written += 2;")
+                self.add_line("((uint8_t*)(buffer + bytes_written))[0] = string_size;")
+                self.add_line("bytes_written += 1;")
+                self.add_line("memcpy(buffer + bytes_written, s->{name}, string_size);")
+                self.add_line("bytes_written += string_size;")
+                self.end_block("}}")
+            elif self.type is Primitives.Boolean:
+                self.start_block("if (s->{name}) {{")
+                self.add_line("((uint16_t*)(buffer + bytes_written))[0] = {field_id} | 0x8000;")
+                self.end_block("}}")
+                self.start_block("else {{")
+                self.add_line("((uint16_t*)(buffer + bytes_written))[0] = {field_id};")
+                self.end_block("}}")
+                self.add_line("bytes_written += 2;")
+            else:
+                raise TypeError("Unrecognized member type '{}'".format(self.type))
 
         self.end_block("}}")
         self.pop_parameters()
@@ -587,10 +617,11 @@ class StructMember(SchemaElement):
         self.push_parameters()
         self.set_parameter("parent_name", parent.name)
         self.set_parameter("name", self.name)
+        self.set_parameter("cast", self.cast)
         self.start_block("if (s->{name}_present) {{")
 
         if self.vector and not self.vector_size:
-            self.start_block("if (!{parent_name}_set_{name}(new_s, s->{name}, s->{name}_length)) {{")
+            self.start_block("if (!{parent_name}_set_{name}(new_s, ({cast})s->{name}, s->{name}_length)) {{")
         else:
             self.start_block("if (!{parent_name}_set_{name}(new_s, s->{name})) {{")
 
@@ -604,7 +635,7 @@ class StructMember(SchemaElement):
         self.push_parameters()
         self.set_parameter("parent_name", parent.name)
         self.set_parameter("name", self.name)
-        self.set_parameter("const_type", self.const_type)
+        self.set_parameter("param_type", self.param_type)
         self.set_parameter("pointer_type", self.pointer_type)
         self.set_parameter("type_name", self.type.name)
         self.set_parameter("vector_size", self.vector_size)
@@ -616,9 +647,9 @@ class StructMember(SchemaElement):
 
         # Set
         if self.vector and self.vector_size is None:
-            self.start_block("bool {parent_name}_set_{name}({parent_name}_t *s, {const_type}, size_t {name}_length) {{")
+            self.start_block("bool {parent_name}_set_{name}({parent_name}_t *s, {param_type}, size_t {name}_length) {{")
         else:
-            self.start_block("bool {parent_name}_set_{name}({parent_name}_t *s, {const_type}) {{")
+            self.start_block("bool {parent_name}_set_{name}({parent_name}_t *s, {param_type}) {{")
 
         if self.vector:
             self.generate_free(parent)
@@ -817,7 +848,7 @@ class StructDefinition(SchemaElement):
             comment="Creates a copy of an existing {name}_t.",
             return_comment="A newly allocated {name}_t. Must be freed with `{name}_free()`."
         )
-        self.add_line("{name}_t *{name}_copy(const {name}_t *s);")
+        self.add_line("{name}_t *{name}_copy({name}_t *s);")
         self.skip_line()
 
         self.add_c_comment(
@@ -859,7 +890,7 @@ class StructDefinition(SchemaElement):
         self.set_parameter("name", self.name)
 
         # Copy
-        self.start_block("{name}_t *{name}_copy(const {name}_t *s) {{")
+        self.start_block("{name}_t *{name}_copy({name}_t *s) {{")
 
         self.add_line("{name}_t *new_s = {name}_new();")
         self.start_block("if (new_s == NULL) {{")
@@ -875,7 +906,7 @@ class StructDefinition(SchemaElement):
 
         # New
         self.start_block("{name}_t *{name}_new(void) {{")
-        self.add_line("return calloc(1, sizeof({name}_t);")
+        self.add_line("return calloc(1, sizeof({name}_t));")
         self.end_block("}}")
         self.skip_line()
 
@@ -955,7 +986,7 @@ class EnumDefinition(SchemaElement):
     schema: Schema
     name: str
     members: List[EnumMember] = field(default_factory=list)
-    size: str = 'uint16'
+    size: Union[Primitives.Int8, Primitives.UInt8] = 'uint16'
     next_value: int = 0
     values: Set[int] = field(default_factory=set)
 
@@ -1162,6 +1193,7 @@ class Schema:
         self.add_line("#include <stdint.h>")
         self.add_line("#include <stdbool.h>")
         self.add_line("#include <stdlib.h>")
+        self.add_line("#include <string.h>")
         self.add_line("#include \"{header_path}\"")
         self.skip_line()
 
