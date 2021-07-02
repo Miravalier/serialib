@@ -294,9 +294,6 @@ INTEGER_PRIMITIVES = {
 
 
 class SchemaElement:
-    def pop_line(self, *args, **kwargs):
-        return self.schema.pop_line(*args, **kwargs)
-
     def add_c_comment(self, *args, **kwargs):
         self.schema.add_c_comment(*args, **kwargs)
 
@@ -315,26 +312,26 @@ class SchemaElement:
     def set_parameter(self, *args, **kwargs):
         self.schema.set_parameter(*args, **kwargs)
 
-    def unset_parameter(self, *args, **kwargs):
-        self.schema.unset_parameter(*args, **kwargs)
-
     def add_line(self, *args, **kwargs):
         self.schema.add_line(*args, **kwargs)
 
     def skip_line(self, *args, **kwargs):
         self.schema.skip_line(*args, **kwargs)
 
-    def start_indent(self, *args, **kwargs):
-        self.schema.start_indent(*args, **kwargs)
-
-    def end_indent(self, *args, **kwargs):
-        self.schema.end_indent(*args, **kwargs)
+    def pop_line(self, *args, **kwargs):
+        return self.schema.pop_line(*args, **kwargs)
 
     def start_block(self, *args, **kwargs):
         self.schema.start_block(*args, **kwargs)
 
     def end_block(self, *args, **kwargs):
         self.schema.end_block(*args, **kwargs)
+
+    def serialize_py_varint(self, *args, **kwargs):
+        self.schema.serialize_py_varint(*args, **kwargs)
+
+    def serialize_c_varint(self, *args, **kwargs):
+        self.schema.serialize_c_varint(*args, **kwargs)
 
 
 @dataclass
@@ -598,22 +595,7 @@ class StructMember(SchemaElement):
                 self.add_line("uint8_t *child_buffer;")
                 self.add_line("size_t child_buffer_size;")
                 self.add_line("{type_name}_serialize(s->{name}[i], &child_buffer, &buffer_size);")
-                self.start_block("if (child_buffer_size < 0xFE) {{")
-                self.add_line("((uint8_t*)(buffer + bytes_written))[0] = (uint8_t)child_buffer_size;")
-                self.add_line("bytes_written += 1;")
-                self.end_block("}}")
-                self.start_block("else if (child_buffer_size <  0xFFFF) {{")
-                self.add_line("((uint8_t*)(buffer + bytes_written))[0] = 0xFE;")
-                self.add_line("bytes_written += 1;")
-                self.add_line("((uint16_t*)(buffer + bytes_written))[0] = (uint16_t)child_buffer_size;")
-                self.add_line("bytes_written += 2;")
-                self.end_block("}}")
-                self.start_block("else {{")
-                self.add_line("((uint8_t*)(buffer + bytes_written))[0] = 0xFF;")
-                self.add_line("bytes_written += 1;")
-                self.add_line("((uint32_t*)(buffer + bytes_written))[0] = (uint32_t)child_buffer_size;")
-                self.add_line("bytes_written += 4;")
-                self.end_block("}}")
+                self.serialize_c_varint("child_buffer_size")
                 self.add_line("memcpy(buffer + bytes_written, child_buffer, child_buffer_size);")
                 self.add_line("bytes_written += child_buffer_size;")
                 self.add_line("free(child_buffer);")
@@ -629,22 +611,7 @@ class StructMember(SchemaElement):
                 self.add_line("bytes_written += {byte_width};")
             elif self.type is Primitives.String:
                 self.add_line("size_t string_size = strlen(s->{name}[i]);")
-                self.start_block("if (string_size < 0xFE) {{")
-                self.add_line("((uint8_t*)(buffer + bytes_written))[0] = (uint8_t)string_size;")
-                self.add_line("bytes_written += 1;")
-                self.end_block("}}")
-                self.start_block("else if (string_size <  0xFFFF) {{")
-                self.add_line("((uint8_t*)(buffer + bytes_written))[0] = 0xFE;")
-                self.add_line("bytes_written += 1;")
-                self.add_line("((uint16_t*)(buffer + bytes_written))[0] = (uint16_t)string_size;")
-                self.add_line("bytes_written += 2;")
-                self.end_block("}}")
-                self.start_block("else {{")
-                self.add_line("((uint8_t*)(buffer + bytes_written))[0] = 0xFF;")
-                self.add_line("bytes_written += 1;")
-                self.add_line("((uint32_t*)(buffer + bytes_written))[0] = (uint32_t)string_size;")
-                self.add_line("bytes_written += 4;")
-                self.end_block("}}")
+                self.serialize_c_varint("string_size")
                 self.add_line("memcpy(buffer + bytes_written, s->{name}[i], string_size);")
                 self.add_line("bytes_written += string_size;")
             elif self.type is Primitives.Boolean:
@@ -844,19 +811,10 @@ class StructMember(SchemaElement):
         if self.vector:
             if self.vector_size is None:
                 self.add_line("field_length = len(self.{field})")
-                self.start_block("if field_length > 0xFF:")
-                self.add_line("buf.extend(uint16(field_id | 0x8000))")
-                self.add_line("buf.extend(uint32(field_length))")
-                self.end_block()
-
-                self.start_block("else:")
-                self.add_line("buf.extend(uint16(field_id))")
-                self.add_line("buf.extend(uint8(field_length))")
-                self.end_block()
+                self.serialize_py_varint("field_length")
             else:
                 self.set_parameter("vector_size", self.vector_size)
                 self.add_line("field_length = {vector_size}")
-                self.add_line("buf.extend(uint16(field_id))")
 
             if self.type is Primitives.Boolean:
                 self.add_line("data = bytearray(((field_length - 1) // 8) + 1)")
@@ -865,34 +823,14 @@ class StructMember(SchemaElement):
             if isinstance(self.type, (StructDefinition, TableDefinition)):
                 self.add_line("child_buf = self.{field}[i].serialize()")
                 self.add_line("child_length = len(child_buf)")
-                self.start_block("if child_length > 0xFFFF:")
-                self.add_line("buf.extend(uint8(0xFF))")
-                self.add_line("buf.extend(uint32(child_length))")
-                self.end_block()
-                self.start_block("elif child_length >= 0xFE:")
-                self.add_line("buf.extend(uint8(0xFE))")
-                self.add_line("buf.extend(uint16(child_length))")
-                self.end_block()
-                self.start_block("else:")
-                self.add_line("buf.extend(uint8(child_length))")
-                self.end_block()
+                self.serialize_py_varint("child_length")
                 self.add_line("buf.extend(child_buf)")
             elif isinstance(self.type, EnumDefinition):
                 self.set_parameter("bit_width", self.type.size.byte_width*8)
                 self.add_line("buf.extend(uint{bit_width}(self.{field}[i]))")
             elif self.type is Primitives.String:
                 self.add_line("string_length = len(self.{field}[i])")
-                self.start_block("if string_length > 0xFFFF:")
-                self.add_line("buf.extend(uint8(0xFF))")
-                self.add_line("buf.extend(uint32(string_length))")
-                self.end_block()
-                self.start_block("elif string_length >= 0xFE:")
-                self.add_line("buf.extend(uint8(0xFE))")
-                self.add_line("buf.extend(uint16(string_length))")
-                self.end_block()
-                self.start_block("else:")
-                self.add_line("buf.extend(uint8(string_length))")
-                self.end_block()
+                self.serialize_py_varint("string_length")
                 self.add_line("buf.extend(self.{field}[i].encode('utf-8'))")
             elif self.type is Primitives.Boolean:
                 self.start_block("if self.{field}[i]:")
@@ -909,34 +847,26 @@ class StructMember(SchemaElement):
                 self.add_line("buf.extend(data)")
         else:
             if isinstance(self.type, (StructDefinition, TableDefinition)):
-                self.add_line("buf.extend(uint16(field_id))")
-                self.add_line("buf.extend(self.{field}.serialize())")
+                self.add_line("child_buf = self.{field}.serialize()")
+                self.add_line("child_length = len(child_buf)")
+                self.serialize_py_varint("child_length")
+                self.add_line("buf.extend(child_buf)")
             elif isinstance(self.type, EnumDefinition):
                 self.set_parameter("bit_width", self.type.size.byte_width*8)
-                self.add_line("buf.extend(uint16(field_id))")
                 self.add_line("buf.extend(uint{bit_width}(self.{field}))")
             elif self.type is Primitives.String:
-                self.start_block("if len(self.{field}) > 0xFF:")
-                self.add_line("buf.extend(uint16(field_id | 0x8000))")
-                self.add_line("buf.extend(uint32(len(self.{field})))")
-                self.end_block()
-
-                self.start_block("else:")
-                self.add_line("buf.extend(uint16(field_id))")
-                self.add_line("buf.extend(uint8(len(self.{field})))")
-                self.end_block()
-
+                self.add_line("string_length = len(self.{field})")
+                self.serialize_py_varint("string_length")
                 self.add_line("buf.extend(self.{field}.encode('utf-8'))")
             elif self.type is Primitives.Boolean:
                 self.start_block("if self.{field}:")
-                self.add_line("buf.extend(uint16(field_id | 0x8000))")
+                self.add_line("buf.extend(uint8(1))")
                 self.end_block()
                 self.start_block("else:")
-                self.add_line("buf.extend(uint16(field_id))")
+                self.add_line("buf.extend(uint8(0))")
                 self.end_block()
             elif self.type in INTEGER_PRIMITIVES:
                 self.set_parameter("bit_width", self.type.byte_width*8)
-                self.add_line("buf.extend(uint16(field_id))")
                 self.add_line("buf.extend(uint{bit_width}(self.{field}))")
             else:
                 raise TypeError("Unrecognized struct member type")
@@ -1159,8 +1089,12 @@ class StructDefinition(SchemaElement):
         """
         self.set_parameter("cls", self.name)
         self.set_parameter("table_id", self.table_id)
+        self.set_parameter("bitfield_byte_width", (len(self.members) - 1) // 8 + 1)
 
         self.start_block("class {cls}:")
+
+        self.add_line("__slots__ = [{}]".format(", ".join('"_{}"'.format(m.name) for m in self.members)))
+        self.skip_line()
 
         parameters = ['self']
         for member in self.members:
@@ -1234,19 +1168,29 @@ class StructDefinition(SchemaElement):
 
         self.start_block("def serialize(self) -> bytes:")
         self.add_line("buf = bytearray()")
-        self.add_line("buf.extend(uint16({table_id}))")
-        self.add_line("buf.extend(uint16(0))")
-        self.add_line("field_count = 0")
+        if self.table_id > 0xFFFFFFFF:
+            table_id_bytes = "b'0xFF' + uint64({})".format(self.table_id)
+        elif self.table_id > 0xFFFF:
+            table_id_bytes = "b'0xFE' + uint32({})".format(self.table_id)
+        elif self.table_id >= 0xFD:
+            table_id_bytes = "b'0xFD' + uint16({})".format(self.table_id)
+        else:
+            table_id_bytes = "uint8({})".format(self.table_id)
+        self.add_line("buf.extend({})".format(table_id_bytes))
+        self.add_line("bitfield_index = len(buf)")
+        self.add_line("buf.extend(bytearray({bitfield_byte_width}))")
         for member in self.members:
             self.set_parameter("field", member.name)
             if member.vector and member.vector_size is None:
                 self.start_block("if len(self._{field}) > 0:")
             else:
                 self.start_block("if self._{field} is not None:")
-            self.add_line("field_count += 1")
+            self.add_line("buf[bitfield_index+{}] |= {}".format(
+                member.field_id // 8,
+                1 << (7 - member.field_id & 7)
+            ))
             member.generate_python_serialize()
             self.end_block()
-        self.add_line("buf[2:4] = uint16(field_count)")
         self.add_line("return bytes(buf)")
         self.end_block()
         self.skip_line()
@@ -1324,7 +1268,7 @@ class EnumDefinition(SchemaElement):
 class Schema:
     definitions: Dict[str, Union[EnumDefinition, StructDefinition, TableDefinition]]
     name: str = "ANONYMOUS_SCHEMA"
-    next_table_id: int = 1
+    next_table_id: int = 0
     indentation: str = '    '
     indentation_level: int = 0
     current_output: List[str] = field(default_factory=list)
@@ -1364,13 +1308,50 @@ class Schema:
             self.pop_line()
 
         self.add_line(closer)
+    
+    def serialize_py_varint(self, expr: str):
+        self.start_block("if {} > 0xFFFFFFFF:".format(expr))
+        self.add_line("buf.extend(uint8(0xFF))")
+        self.add_line("buf.extend(uint64(length))")
+        self.end_block()
+        self.start_block("elif {} > 0xFFFF:".format(expr))
+        self.add_line("buf.extend(uint8(0xFE))")
+        self.add_line("buf.extend(uint32({}))".format(expr))
+        self.end_block()
+        self.start_block("elif {} >= 0xFD:".format(expr))
+        self.add_line("buf.extend(uint8(0xFD))")
+        self.add_line("buf.extend(uint16({}))".format(expr))
+        self.end_block()
+        self.start_block("else:")
+        self.add_line("buf.extend(uint8({}))".format(expr))
+        self.end_block()
+
+    def serialize_c_varint(self, expr: str):
+        self.start_block("if ({} > 0xFFFFFFFF) {{{{".format(expr))
+        self.add_line("((uint8_t*)(buffer + bytes_written))[0] = 0xFF;")
+        self.add_line("bytes_written += 1;")
+        self.add_line("((uint64_t*)(buffer + bytes_written))[0] = (uint64_t)({});".format(expr))
+        self.add_line("bytes_written += 8;")
+        self.end_block("}}")
+        self.start_block("else if ({} > 0xFFFF) {{{{".format(expr))
+        self.add_line("((uint8_t*)(buffer + bytes_written))[0] = 0xFE;")
+        self.add_line("bytes_written += 1;")
+        self.add_line("((uint32_t*)(buffer + bytes_written))[0] = (uint32_t)({});".format(expr))
+        self.add_line("bytes_written += 4;")
+        self.end_block("}}")
+        self.start_block("else if ({} >= 0xFD) {{{{".format(expr))
+        self.add_line("((uint8_t*)(buffer + bytes_written))[0] = 0xFD;")
+        self.add_line("bytes_written += 1;")
+        self.add_line("((uint16_t*)(buffer + bytes_written))[0] = (uint16_t)({});".format(expr))
+        self.add_line("bytes_written += 2;")
+        self.end_block("}}")
+        self.start_block("else {{")
+        self.add_line("((uint8_t*)(buffer + bytes_written))[0] = (uint8_t)({});".format(expr))
+        self.add_line("bytes_written += 1;")
+        self.end_block("}}")
 
     def set_parameter(self, key, value):
         self.format_parameters[key] = value
-
-    def unset_parameter(self, key):
-        if key in self.format_parameters:
-            del self.format_parameters[key]
 
     def push_parameters(self):
         self.format_parameters_stack.append(self.format_parameters.copy())
@@ -1378,7 +1359,7 @@ class Schema:
     def pop_parameters(self):
         self.format_parameters = self.format_parameters_stack.pop()
 
-    def add_line(self, code):
+    def add_line(self, code=None):
         if code:
             self.current_output.append(
                 self.indentation * self.indentation_level + code.format(**self.format_parameters)
@@ -1389,14 +1370,9 @@ class Schema:
     def pop_line(self):
         return self.current_output.pop()
 
-    def skip_line(self):
-        self.current_output.append('')
-
-    def start_indent(self):
-        self.indentation_level += 1
-
-    def end_indent(self):
-        self.indentation_level -= 1
+    def skip_line(self, count=1):
+        for i in range(count):
+            self.current_output.append('')
 
     def start_block(self, code=""):
         if code:
@@ -1424,7 +1400,7 @@ class Schema:
         for definition in self.structs:
             definition.table_id = self.next_table_id
             self.next_table_id += 1
-            next_field_id = 1
+            next_field_id = 0
             for member in definition.members:
                 member.field_id = next_field_id
                 next_field_id += 1
@@ -1510,68 +1486,57 @@ class Schema:
         self.add_line("from dataclasses import dataclass, field")
         self.add_line("from enum import IntEnum")
         self.add_line("from typing import Union, List, Optional")
-        self.skip_line()
-        self.skip_line()
+        self.skip_line(2)
 
         self.start_block("def uint8(value):")
         self.add_line("return value.to_bytes(1, 'big', signed=False)")
         self.end_block()
-        self.skip_line()
-        self.skip_line()
+        self.skip_line(2)
 
         self.start_block("def uint16(value):")
         self.add_line("return value.to_bytes(2, 'big', signed=False)")
         self.end_block()
-        self.skip_line()
-        self.skip_line()
+        self.skip_line(2)
 
         self.start_block("def uint32(value):")
         self.add_line("return value.to_bytes(4, 'big', signed=False)")
         self.end_block()
-        self.skip_line()
-        self.skip_line()
+        self.skip_line(2)
 
         self.start_block("def uint64(value):")
         self.add_line("return value.to_bytes(8, 'big', signed=False)")
         self.end_block()
-        self.skip_line()
-        self.skip_line()
+        self.skip_line(2)
 
         self.start_block("def int8(value):")
         self.add_line("return value.to_bytes(1, 'big', signed=True)")
         self.end_block()
-        self.skip_line()
-        self.skip_line()
+        self.skip_line(2)
 
         self.start_block("def int16(value):")
         self.add_line("return value.to_bytes(2, 'big', signed=True)")
         self.end_block()
-        self.skip_line()
-        self.skip_line()
+        self.skip_line(2)
 
         self.start_block("def int32(value):")
         self.add_line("return value.to_bytes(4, 'big', signed=True)")
         self.end_block()
-        self.skip_line()
-        self.skip_line()
+        self.skip_line(2)
 
         self.start_block("def int64(value):")
         self.add_line("return value.to_bytes(8, 'big', signed=True)")
         self.end_block()
-        self.skip_line()
-        self.skip_line()
+        self.skip_line(2)
 
         self.start_block("def unsigned_int(buf):")
         self.add_line("return int.from_bytes(buf, 'big', signed=False)")
         self.end_block()
-        self.skip_line()
-        self.skip_line()
+        self.skip_line(2)
 
         self.start_block("def signed_int(buf):")
         self.add_line("return int.from_bytes(buf, 'big', signed=True)")
         self.end_block()
-        self.skip_line()
-        self.skip_line()
+        self.skip_line(2)
 
         for definition in self.definitions.values():
             definition.generate_python()
@@ -1580,8 +1545,7 @@ class Schema:
         for definition in self.structs:
             self.add_line("{}: {},".format(definition.table_id, definition.name))
         self.end_block("}}")
-        self.skip_line()
-        self.skip_line()
+        self.skip_line(2)
 
         self.start_block("def deserialize(buf: Union[bytes, bytearray]):")
         self.add_line("table_id = unsigned_int(buf[0:2])")
