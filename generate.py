@@ -411,6 +411,27 @@ class StructMember(SchemaElement):
             return "{}{}*".format(self.type.c_name, separator)
         else:
             return "{}".format(self.type.c_name)
+    
+    @property
+    def python_type(self):
+        if isinstance(self.type, (StructDefinition, TableDefinition, EnumDefinition)):
+            s = self.type.name
+        elif self.type is Primitives.String:
+            s = 'str'
+        elif self.type is Primitives.Boolean:
+            s = 'bool'
+        elif self.type in INTEGER_PRIMITIVES:
+            s = 'int'
+
+        if self.vector:
+            s = "Optional[List[{}]]".format(s)
+        else:
+            s = "Optional[{}]".format(s)
+        return s
+
+    @property
+    def python_parameter(self):
+        return "{}: {} = None".format(self.name, self.python_type)
 
     def generate_typedef_field(self):
         self.add_line("{};".format(self.c_type))
@@ -454,7 +475,7 @@ class StructMember(SchemaElement):
             self.add_line("bool {struct}_set_{field}({struct}_t *s, " + self.param_type + ", size_t {field}_length);")
             self.skip_line()
 
-            if self.default:
+            if self.default is not None:
                 self.add_c_comment(
                     comment="""
                         Retrieve the {field} field from the given {struct} if that field is present,
@@ -491,7 +512,7 @@ class StructMember(SchemaElement):
             self.add_line("bool {struct}_set_{field}({struct}_t *s, " + self.param_type + ");")
             self.skip_line()
 
-            if self.default:
+            if self.default is not None:
                 self.add_c_comment(
                     comment="""
                         Retrieve the {field} field from the given {struct} if that field is present,
@@ -835,6 +856,7 @@ class StructMember(SchemaElement):
             else:
                 self.set_parameter("vector_size", self.vector_size)
                 self.add_line("field_length = {vector_size}")
+                self.add_line("buf.extend(uint16(field_id))")
 
             if self.type is Primitives.Boolean:
                 self.add_line("data = bytearray(((field_length - 1) // 8) + 1)")
@@ -924,39 +946,21 @@ class StructMember(SchemaElement):
         Struct Member - Deserialize
         """
 
-    def generate_python_declaration(self):
+    def generate_python_initialize(self):
         """
-        Struct Member - Field Declaration
+        Struct Member - Initialization
         """
         self.set_parameter("type_name", self.type.name)
 
-        if self.vector:
-            if self.vector_size:
-                if isinstance(self.type, (StructDefinition, TableDefinition, EnumDefinition)):
-                    self.add_line("{field}: Optional[List[{type_name}]] = None")
-                elif self.type is Primitives.String:
-                    self.add_line("{field}: Optional[List[str]] = None")
-                elif self.type is Primitives.Boolean:
-                    self.add_line("{field}: Optional[List[bool]] = None")
-                else:
-                    self.add_line("{field}: Optional[List[int]] = None")
-            else:
-                if isinstance(self.type, (StructDefinition, TableDefinition, EnumDefinition)):
-                    self.add_line("{field}: List[{type_name}] = field(default_factory=list)")
-                elif self.type is Primitives.String:
-                    self.add_line("{field}: List[str] = field(default_factory=list)")
-                elif self.type is Primitives.Boolean:
-                    self.add_line("{field}: List[bool] = field(default_factory=list)")
-                else:
-                    self.add_line("{field}: List[int] = field(default_factory=list)")
-        elif isinstance(self.type, (StructDefinition, TableDefinition, EnumDefinition)):
-            self.add_line("{field}: Optional[{type_name}] = None")
-        elif self.type is Primitives.String:
-            self.add_line("{field}: Optional[str] = None")
-        elif self.type is Primitives.Boolean:
-            self.add_line("{field}: Optional[bool] = None")
+        if self.vector and self.vector_size is None:
+            self.start_block("if {field} is None:")
+            self.add_line("self.{field} = []")
+            self.end_block()
+            self.start_block("else:")
+            self.add_line("self.{field} = {field}")
+            self.end_block()
         else:
-            self.add_line("{field}: Optional[int] = None")
+            self.add_line("self.{field} = {field}")
 
 
 @dataclass
@@ -1156,26 +1160,93 @@ class StructDefinition(SchemaElement):
         self.set_parameter("cls", self.name)
         self.set_parameter("table_id", self.table_id)
 
-        self.add_line("@dataclass")
         self.start_block("class {cls}:")
+
+        parameters = ['self']
+        for member in self.members:
+            parameters.append(member.python_parameter)
+        self.start_block("def __init__({}):".format(
+            ", ".join(parameters)
+        ))
+        for member in self.members:
+            self.set_parameter("field", member.name)
+            member.generate_python_initialize()
+        self.end_block()
+        self.skip_line()
+
+        self.start_block("def __repr__(self):")
+        self.add_line("values = []")
+        
+        for member in self.members:
+            self.set_parameter("field", member.name)
+            self.start_block("if self.{field} is not None:")
+            self.add_line("values.append('{field}=' + repr(self.{field}))")
+            self.end_block()
+
+        self.add_line("return '{cls}(' + ', '.join(values) + ')'")
+        self.end_block()
+        self.skip_line()
 
         for member in self.members:
             self.set_parameter("field", member.name)
-            member.generate_python_declaration()
+            self.set_parameter("python_type", member.python_type)
+            self.set_parameter("type_name", member.type.name)
+            self.set_parameter("vector_size", member.vector_size)
 
-        if self.members:
+            self.add_line("@property")
+            self.start_block("def {field}(self):")
+            if member.default is not None:
+                if member.type is Primitives.Boolean:
+                    self.set_parameter("default", repr(bool(member.default)))
+                else:
+                    self.set_parameter("default", repr(member.default))
+                self.start_block("if self._{field} is None:")
+                if isinstance(member.type, EnumDefinition):
+                    self.add_line("return {type_name}({default})")
+                else:
+                    self.add_line("return {default}")
+                self.end_block()
+                self.start_block("else:")
+                self.add_line("return self._{field}")
+                self.end_block()
+            else:
+                self.add_line("return self._{field}")
+            self.end_block()
+            self.skip_line()
+
+            self.add_line("@{field}.setter")
+            self.start_block("def {field}(self, value: {python_type}):")
+            if member.vector and member.vector_size:
+                self.start_block("if value is not None and len(value) != {vector_size}:")
+                self.add_line("raise ValueError('{cls}.{field} must be a list of fixed size: {vector_size}')")
+                self.end_block()
+            if not member.vector and isinstance(member.type, EnumDefinition):
+                self.start_block("if value is None:")
+                self.add_line("self._{field} = None")
+                self.end_block()
+                self.start_block("else:")
+                self.add_line("self._{field} = {type_name}(value)")
+                self.end_block()
+            else:
+                self.add_line("self._{field} = value")
+            self.end_block()
             self.skip_line()
 
         self.start_block("def serialize(self) -> bytes:")
         self.add_line("buf = bytearray()")
+        self.add_line("buf.extend(uint16({table_id}))")
+        self.add_line("buf.extend(uint16(0))")
+        self.add_line("field_count = 0")
         for member in self.members:
             self.set_parameter("field", member.name)
             if member.vector and member.vector_size is None:
-                self.start_block("if len(self.{field}) != 0:")
+                self.start_block("if len(self._{field}) > 0:")
             else:
-                self.start_block("if self.{field} is not None:")
+                self.start_block("if self._{field} is not None:")
+            self.add_line("field_count += 1")
             member.generate_python_serialize()
             self.end_block()
+        self.add_line("buf[2:4] = uint16(field_count)")
         self.add_line("return bytes(buf)")
         self.end_block()
         self.skip_line()
@@ -1184,7 +1255,7 @@ class StructDefinition(SchemaElement):
         self.start_block("def deserialize(cls, buf: Union[bytes, bytearray]) -> {cls}:")
         self.add_line("table_id = unsigned_int(buf[0:2])")
         self.start_block("if table_id != {table_id}:")
-        self.add_line("raise ValueError('Invalid table ID {{}}').format(table_id)")
+        self.add_line("raise ValueError('Invalid table ID {{}}'.format(table_id))")
         self.end_block()
         self.add_line("offset += 2")
         self.add_line("table = cls()")
