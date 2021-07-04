@@ -569,7 +569,15 @@ class StructMember(SchemaElement):
             self.end_block("}}")
         self.pop_parameters()
 
-    def generate_member_serialize(self, parent: Union[StructDefinition, TableDefinition]):
+    def generate_c_deserialize(self, parent: Union[StructDefinition, TableDefinition]):
+        self.push_parameters()
+        self.set_parameter("name", self.name)
+        self.set_parameter("type_name", self.type.name)
+        self.set_parameter("field_id", self.field_id)
+        self.add_line("// TODO deserialize {name}")
+        self.pop_parameters()
+
+    def generate_c_serialize(self, parent: Union[StructDefinition, TableDefinition]):
         self.push_parameters()
         self.set_parameter("name", self.name)
         self.set_parameter("type_name", self.type.name)
@@ -1057,18 +1065,13 @@ class StructDefinition(SchemaElement):
         
         # Serialize
         self.start_block("bool {name}_serialize({name}_t *s, uint8_t **out_buffer, size_t *out_buffer_size) {{")
-        # Pack up the table_id based on the table's position in the schema
-        # gonna have to figure that out somehow
         self.add_line("uint8_t *buffer = malloc(4);")
         self.add_line("size_t buffer_size = 4;")
         self.add_line("size_t bytes_written = 4;")
         self.add_line("((uint16_t *)buffer)[0] = (uint16_t)TABLE_TYPE_{name};")
         self.add_line("((uint16_t *)buffer)[1] = 0;")
-        # Iterate over the members of that schema, checking each field
         for member in self.members:
-            member.generate_member_serialize(self)
-        # If it's present, move a memory marker around and slap that shit in
-        # rinse repeat until we're done
+            member.generate_c_serialize(self)
         self.add_line("*out_buffer = buffer;")
         self.add_line("*out_buffer_size = buffer_size;")
         self.end_block("}}")
@@ -1076,12 +1079,22 @@ class StructDefinition(SchemaElement):
 
         # Deserialize
         self.start_block("{name}_t *{name}_deserialize(const uint8_t *buffer, size_t buffer_size) {{")
+        self.add_line("{name}_t* s = {name}_new();")
+        self.start_block("if (s == NULL) {{")
+        self.add_line("return NULL;")
+        self.end_block("}}")
         self.add_line("size_t bytes_read = 0;")
         self.deserialize_c_varint("table_id", declare=True)
         self.start_block("if (table_id != {table_id}) {{")
         self.add_line("goto ERROR;")
         self.end_block("}}")
+        self.skip_line()
+        for member in self.members:
+            member.generate_c_deserialize(self)
+        self.add_line("return s;")
+        self.skip_line()
         self.start_block("ERROR: {{")
+        self.add_line("{name}_free(s);")
         self.add_line("return NULL;")
         self.end_block("}}")
         self.end_block("}}")
