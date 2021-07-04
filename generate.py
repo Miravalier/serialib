@@ -294,6 +294,8 @@ INTEGER_PRIMITIVES = {
 
 
 class SchemaElement:
+    schema: Schema
+
     def add_c_comment(self, *args, **kwargs):
         self.schema.add_c_comment(*args, **kwargs)
 
@@ -332,6 +334,12 @@ class SchemaElement:
 
     def serialize_c_varint(self, *args, **kwargs):
         self.schema.serialize_c_varint(*args, **kwargs)
+
+    def deserialize_py_varint(self, *args, **kwargs):
+        self.schema.deserialize_py_varint(*args, **kwargs)
+
+    def deserialize_c_varint(self, *args, **kwargs):
+        self.schema.deserialize_c_varint(*args, **kwargs)
 
 
 @dataclass
@@ -806,8 +814,6 @@ class StructMember(SchemaElement):
         """
         Struct Member - Serialize
         """
-        self.set_parameter("field_id", self.field_id)
-        self.add_line("field_id = {field_id}")
         if self.vector:
             if self.vector_size is None:
                 self.add_line("field_length = len(self.{field})")
@@ -1018,6 +1024,7 @@ class StructDefinition(SchemaElement):
 
     def generate_c_source(self):
         self.set_parameter("name", self.name)
+        self.set_parameter("table_id", self.table_id)
 
         # Copy
         self.start_block("{name}_t *{name}_copy({name}_t *s) {{")
@@ -1069,13 +1076,28 @@ class StructDefinition(SchemaElement):
 
         # Deserialize
         self.start_block("{name}_t *{name}_deserialize(const uint8_t *buffer, size_t buffer_size) {{")
-        self.skip_line()
+        self.add_line("size_t bytes_read = 0;")
+        self.deserialize_c_varint("table_id", declare=True)
+        self.start_block("if (table_id != {table_id}) {{")
+        self.add_line("goto ERROR;")
+        self.end_block("}}")
+        self.start_block("ERROR: {{")
+        self.add_line("return NULL;")
+        self.end_block("}}")
         self.end_block("}}")
         self.skip_line()
 
         # Verify
         self.start_block("bool {name}_verify(const uint8_t *buffer, size_t buffer_size) {{")
-        self.skip_line()
+        self.add_line("size_t bytes_read = 0;")
+        self.deserialize_c_varint("table_id", declare=True)
+        self.start_block("if (table_id != {table_id}) {{")
+        self.add_line("goto ERROR;")
+        self.end_block("}}")
+        self.add_line("return true;")
+        self.start_block("ERROR: {{")
+        self.add_line("return false;")
+        self.end_block("}}")
         self.end_block("}}")
         self.skip_line()
 
@@ -1113,7 +1135,10 @@ class StructDefinition(SchemaElement):
         
         for member in self.members:
             self.set_parameter("field", member.name)
-            self.start_block("if self.{field} is not None:")
+            if member.vector and member.vector_size is None:
+                self.start_block("if len(self.{field}) > 0:")
+            else:
+                self.start_block("if self.{field} is not None:")
             self.add_line("values.append('{field}=' + repr(self.{field}))")
             self.end_block()
 
@@ -1197,11 +1222,11 @@ class StructDefinition(SchemaElement):
 
         self.add_line("@classmethod")
         self.start_block("def deserialize(cls, buf: Union[bytes, bytearray]) -> {cls}:")
-        self.add_line("table_id = unsigned_int(buf[0:2])")
+        self.add_line("buf_index = 0")
+        self.deserialize_py_varint("table_id")
         self.start_block("if table_id != {table_id}:")
         self.add_line("raise ValueError('Invalid table ID {{}}'.format(table_id))")
         self.end_block()
-        self.add_line("offset += 2")
         self.add_line("table = cls()")
         for member in self.members:
             self.set_parameter("field", member.name)
@@ -1348,6 +1373,60 @@ class Schema:
         self.start_block("else {{")
         self.add_line("((uint8_t*)(buffer + bytes_written))[0] = (uint8_t)({});".format(expr))
         self.add_line("bytes_written += 1;")
+        self.end_block("}}")
+
+    def deserialize_py_varint(self, name: str):
+        self.add_line("specifier = buf[buf_index]")
+        self.add_line("buf_index += 1")
+        self.start_block("if specifier == 0xFF:")
+        self.add_line("{} = unsigned_int(buf[buf_index:buf_index+8])".format(name))
+        self.add_line("buf_index += 8")
+        self.end_block()
+        self.start_block("elif specifier == 0xFE:")
+        self.add_line("{} = unsigned_int(buf[buf_index:buf_index+4])".format(name))
+        self.add_line("buf_index += 4")
+        self.end_block()
+        self.start_block("elif specifier == 0xFD:")
+        self.add_line("{} = unsigned_int(buf[buf_index:buf_index+2])".format(name))
+        self.add_line("buf_index += 2")
+        self.end_block()
+        self.start_block("else:")
+        self.add_line("{} = specifier".format(name))
+        self.end_block()
+
+    def deserialize_c_int(self, name: str, size: int, *, declare: bool = False, signed: bool = False):
+        self.start_block("if (bytes_read + {} > buffer_size) {{{{".format(size))
+        self.add_line("goto ERROR;")
+        self.end_block("}}")
+        ctype = "{}int{}_t".format("" if signed else "u", size * 8)
+        converter = "be{}toh".format(size * 8)
+        if declare:
+            self.add_line("{} {} = {}(*({}*)(buffer+bytes_read));".format(ctype, name, converter, ctype))
+        else:
+            self.add_line("{} = {}(*({}*)(buffer+bytes_read));".format(name, converter, ctype))
+        self.add_line("bytes_read += {};".format(size))
+
+
+    def deserialize_c_varint(self, name: str, *, declare: bool = False):
+        self.start_block("if (bytes_read + 1 > buffer_size) {{")
+        self.add_line("goto ERROR;")
+        self.end_block("}}")
+        if declare:
+            self.add_line("size_t {};".format(name))
+        self.start_block("if (buffer[bytes_read] == 0xFF) {{")
+        self.add_line("bytes_read += 1;")
+        self.deserialize_c_int(name, 8)
+        self.end_block("}}")
+        self.start_block("else if (buffer[bytes_read] == 0xFE) {{")
+        self.add_line("bytes_read += 1;")
+        self.deserialize_c_int(name, 4)
+        self.end_block("}}")
+        self.start_block("else if (buffer[bytes_read] == 0xFD) {{")
+        self.add_line("bytes_read += 1;")
+        self.deserialize_c_int(name, 2)
+        self.end_block("}}")
+        self.start_block("else {{")
+        self.deserialize_c_int(name, 1)
         self.end_block("}}")
 
     def set_parameter(self, key, value):
@@ -1548,7 +1627,8 @@ class Schema:
         self.skip_line(2)
 
         self.start_block("def deserialize(buf: Union[bytes, bytearray]):")
-        self.add_line("table_id = unsigned_int(buf[0:2])")
+        self.add_line("buf_index = 0")
+        self.deserialize_py_varint("table_id")
 
         self.start_block("try:")
         self.add_line("cls = TABLE_ID_MAP[table_id]")
