@@ -1071,11 +1071,7 @@ class StructDefinition(SchemaElement):
         self.add_line("((uint16_t *)buffer)[0] = (uint16_t)TABLE_TYPE_{name};")
         self.add_line("((uint16_t *)buffer)[1] = 0;")
         for member in self.members:
-<<<<<<< Updated upstream
             member.generate_c_serialize(self)
-=======
-            member.generate_member_serialize(self)
->>>>>>> Stashed changes
         self.add_line("*out_buffer = buffer;")
         self.add_line("*out_buffer_size = buffer_size;")
         self.end_block("}}")
