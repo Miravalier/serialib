@@ -328,6 +328,9 @@ class SchemaElement:
 
     def end_block(self, *args, **kwargs):
         self.schema.end_block(*args, **kwargs)
+    
+    def c_allocate(self, *args, **kwargs):
+        self.schema.c_allocate(*args, **kwargs)
 
     def serialize_py_varint(self, *args, **kwargs):
         self.schema.serialize_py_varint(*args, **kwargs)
@@ -583,115 +586,122 @@ class StructMember(SchemaElement):
         self.set_parameter("type_name", self.type.name)
         self.set_parameter("field_id", self.field_id)
         self.start_block("if (s->{name}_present) {{")
-        self.add_line("((uint16_t *)buffer)[1] += 1;")
-
+        self.add_line("buffer[bitfield_index+{}] |= {};".format(
+            self.field_id // 8,
+            1 << (7 - self.field_id & 7)
+        ))
+        
         if self.vector:
             self.set_parameter("length", self.vector_size if self.vector_size is not None else "s->{}_length".format(self.name))
             if self.vector_size is None:
-                self.start_block("if (s->{name}_length > 0xFF) {{")
-                self.add_line("((uint16_t*)(buffer + bytes_written))[0] = {field_id} | 0x8000;")
-                self.add_line("bytes_written += 2;")
-                self.add_line("((uint32_t*)(buffer + bytes_written))[0] = (uint32_t)s->{name}_length;")
-                self.add_line("bytes_written += 4;")
-                self.end_block("}}")
-                self.start_block("else {{")
-                self.add_line("((uint16_t*)(buffer + bytes_written))[0] = {field_id};")
-                self.add_line("bytes_written += 2;")
-                self.add_line("((uint8_t*)(buffer + bytes_written))[0] = (uint8_t)s->{name}_length;")
-                self.add_line("bytes_written += 1;")
-                self.end_block("}}")
-            else:
-                self.add_line("((uint16_t*)(buffer + bytes_written))[0] = {field_id};")
-                self.add_line("bytes_written += 2;")
-            if self.type is Primitives.Boolean:
+                self.serialize_c_varint("{length}")
+            # Pre for-loop
+            if isinstance(self.type, (TableDefinition, StructDefinition)):
+                pass
+            elif self.type is Primitives.String:
+                pass
+            elif isinstance(self.type, EnumDefinition):
+                self.set_parameter("byte_width", self.type.size.byte_width)
+                self.set_parameter("c_type", self.type.size.c_name)
+                if self.type.size.byte_width in (2,4,8):
+                    converter = "htobe{}".format(self.type.size.byte_width * 8)
+                else:
+                    converter = ""
+                self.set_parameter("converter", converter)
+                self.c_allocate("{byte_width} * {length}")
+            elif self.type in INTEGER_PRIMITIVES:
+                self.set_parameter("byte_width", self.type.byte_width)
+                self.set_parameter("c_type", self.type.c_name)
+                if self.type.byte_width in (2,4,8):
+                    converter = "htobe{}".format(self.type.byte_width * 8)
+                else:
+                    converter = ""
+                self.set_parameter("converter", converter)
+                self.c_allocate("{byte_width} * {length}")
+            elif self.type is Primitives.Boolean:
                 self.add_line("size_t byte_count = (({length} - 1) / 8) + 1;")
+                self.c_allocate("byte_count")
                 self.add_line("bzero(buffer + bytes_written, byte_count);")
             self.start_block("for (size_t i = 0; i < {length}; i++) {{")
+            # Mid for-loop
             if isinstance(self.type, (TableDefinition, StructDefinition)):
                 self.add_line("uint8_t *child_buffer;")
                 self.add_line("size_t child_buffer_size;")
-                self.add_line("{type_name}_serialize(s->{name}[i], &child_buffer, &buffer_size);")
+                self.add_line("{type_name}_serialize(s->{name}[i], &child_buffer, &child_buffer_size);")
                 self.serialize_c_varint("child_buffer_size")
+                self.c_allocate("child_buffer_size")
                 self.add_line("memcpy(buffer + bytes_written, child_buffer, child_buffer_size);")
                 self.add_line("bytes_written += child_buffer_size;")
                 self.add_line("free(child_buffer);")
             elif isinstance(self.type, EnumDefinition):
-                self.set_parameter("byte_width", self.type.size.byte_width)
-                self.set_parameter("c_type", self.type.size.c_name)
-                self.add_line("(({c_type}*)(buffer + bytes_written))[0] = ({c_type})s->{name}[i];")
+                self.add_line("(({c_type}*)(buffer + bytes_written))[0] = {converter}(({c_type})s->{name}[i]);")
                 self.add_line("bytes_written += {byte_width};")
             elif self.type in INTEGER_PRIMITIVES:
-                self.set_parameter("byte_width", self.type.byte_width)
-                self.set_parameter("c_type", self.type.c_name)
-                self.add_line("(({c_type}*)(buffer + bytes_written))[0] = ({c_type})s->{name}[i];")
+                self.add_line("(({c_type}*)(buffer + bytes_written))[0] = {converter}(({c_type})s->{name}[i]);")
                 self.add_line("bytes_written += {byte_width};")
             elif self.type is Primitives.String:
                 self.add_line("size_t string_size = strlen(s->{name}[i]);")
                 self.serialize_c_varint("string_size")
+                self.c_allocate("string_size")
                 self.add_line("memcpy(buffer + bytes_written, s->{name}[i], string_size);")
                 self.add_line("bytes_written += string_size;")
             elif self.type is Primitives.Boolean:
+                self.start_block("if (s->{name}[i]) {{")
                 self.add_line("(buffer + bytes_written + i / 8)[0] |= 1 << (7 - (i & 7));")
+                self.end_block("}}")
             else:
                 raise TypeError("Unrecognized member type '{}'".format(self.type))
             self.end_block("}}")
+            # Post for-loop
             if self.type is Primitives.Boolean:
                 self.add_line("bytes_written += byte_count;")
 
         else:
             if isinstance(self.type, (TableDefinition, StructDefinition)):
-                self.add_line("((uint16_t*)(buffer + bytes_written))[0] = {field_id};")
-                self.add_line("bytes_written += 2;")
                 self.add_line("uint8_t *child_buffer;")
                 self.add_line("size_t child_buffer_size;")
-                self.add_line("{type_name}_serialize(s->{name}, &child_buffer, &buffer_size);")
+                self.add_line("{type_name}_serialize(s->{name}, &child_buffer, &child_buffer_size);")
+                self.c_allocate("child_buffer_size")
                 self.add_line("memcpy(buffer + bytes_written, child_buffer, child_buffer_size);")
                 self.add_line("bytes_written += child_buffer_size;")
                 self.add_line("free(child_buffer);")
             elif isinstance(self.type, EnumDefinition):
+                if self.type.size.byte_width in (2,4,8):
+                    converter = "htobe{}".format(self.type.size.byte_width * 8)
+                else:
+                    converter = ""
+                self.set_parameter("converter", converter)
                 self.set_parameter("byte_width", self.type.size.byte_width)
                 self.set_parameter("c_type", self.type.size.c_name)
-                self.add_line("((uint16_t*)(buffer + bytes_written))[0] = {field_id};")
-                self.add_line("bytes_written += 2;")
-                self.add_line("(({c_type}*)(buffer + bytes_written))[0] = s->{name};")
+                self.c_allocate("{byte_width}")
+                self.add_line("(({c_type}*)(buffer + bytes_written))[0] = {converter}(s->{name});")
                 self.add_line("bytes_written += {byte_width};")
             elif self.type in INTEGER_PRIMITIVES:
+                if self.type.byte_width in (2,4,8):
+                    converter = "htobe{}".format(self.type.byte_width * 8)
+                else:
+                    converter = ""
+                self.set_parameter("converter", converter)
                 self.set_parameter("byte_width", self.type.byte_width)
                 self.set_parameter("c_type", self.type.c_name)
-                self.add_line("((uint16_t*)(buffer + bytes_written))[0] = {field_id};")
-                self.add_line("bytes_written += 2;")
-                self.add_line("(({c_type}*)(buffer + bytes_written))[0] = s->{name};")
+                self.c_allocate("{byte_width}")
+                self.add_line("(({c_type}*)(buffer + bytes_written))[0] = {converter}(s->{name});")
                 self.add_line("bytes_written += {byte_width};")
             elif self.type is Primitives.String:
                 self.add_line("size_t string_size = strlen(s->{name});")
-                self.start_block("if (string_size > 255) {{")
-                self.add_line("buffer_size += 2 + sizeof(uint32_t) + string_size;")
-                self.add_line("buffer = realloc(buffer, buffer_size);")
-                self.add_line("((uint16_t*)(buffer + bytes_written))[0] = {field_id} | 0x8000;")
-                self.add_line("bytes_written += 2;")
-                self.add_line("((uint32_t*)(buffer + bytes_written))[0] = string_size;")
-                self.add_line("bytes_written += 4;")
+                self.serialize_c_varint("string_size")
+                self.c_allocate("string_size")
                 self.add_line("memcpy(buffer + bytes_written, s->{name}, string_size);")
                 self.add_line("bytes_written += string_size;")
-                self.end_block("}}")
-                self.start_block("else {{")
-                self.add_line("buffer_size += 2 + sizeof(uint8_t) + strlen(s->{name});")
-                self.add_line("buffer = realloc(buffer, buffer_size);")
-                self.add_line("((uint16_t*)(buffer + bytes_written))[0] = {field_id};")
-                self.add_line("bytes_written += 2;")
-                self.add_line("((uint8_t*)(buffer + bytes_written))[0] = string_size;")
-                self.add_line("bytes_written += 1;")
-                self.add_line("memcpy(buffer + bytes_written, s->{name}, string_size);")
-                self.add_line("bytes_written += string_size;")
-                self.end_block("}}")
             elif self.type is Primitives.Boolean:
+                self.c_allocate(1)
                 self.start_block("if (s->{name}) {{")
-                self.add_line("((uint16_t*)(buffer + bytes_written))[0] = {field_id} | 0x8000;")
+                self.add_line("((uint8_t*)(buffer + bytes_written))[0] = 1;")
                 self.end_block("}}")
                 self.start_block("else {{")
-                self.add_line("((uint16_t*)(buffer + bytes_written))[0] = {field_id};")
+                self.add_line("((uint8_t*)(buffer + bytes_written))[0] = 0;")
                 self.end_block("}}")
-                self.add_line("bytes_written += 2;")
+                self.add_line("bytes_written += 1;")
             else:
                 raise TypeError("Unrecognized member type '{}'".format(self.type))
 
@@ -1033,6 +1043,7 @@ class StructDefinition(SchemaElement):
     def generate_c_source(self):
         self.set_parameter("name", self.name)
         self.set_parameter("table_id", self.table_id)
+        self.set_parameter("bitfield_byte_width", (len(self.members) - 1) // 8 + 1)
 
         # Copy
         self.start_block("{name}_t *{name}_copy({name}_t *s) {{")
@@ -1065,15 +1076,40 @@ class StructDefinition(SchemaElement):
         
         # Serialize
         self.start_block("bool {name}_serialize({name}_t *s, uint8_t **out_buffer, size_t *out_buffer_size) {{")
-        self.add_line("uint8_t *buffer = malloc(4);")
-        self.add_line("size_t buffer_size = 4;")
-        self.add_line("size_t bytes_written = 4;")
-        self.add_line("((uint16_t *)buffer)[0] = (uint16_t)TABLE_TYPE_{name};")
-        self.add_line("((uint16_t *)buffer)[1] = 0;")
+        self.add_line("size_t buffer_size = 32;")
+        self.add_line("uint8_t *buffer = malloc(buffer_size);")
+        self.add_line("size_t bytes_written = 0;")
+        if self.table_id > 0xFFFFFFFF:
+            self.c_allocate(9)
+            self.add_line("buffer[bytes_written] = 0xFF;")
+            self.add_line("bytes_written += 1;")
+            self.add_line("((uint64_t*)(buffer + bytes_written))[0] = TABLE_TYPE_{name};")
+            self.add_line("bytes_written += 8;")
+        elif self.table_id > 0xFFFF:
+            self.c_allocate(5)
+            self.add_line("buffer[bytes_written] = 0xFE;")
+            self.add_line("bytes_written += 1;")
+            self.add_line("((uint32_t*)(buffer + bytes_written))[0] = TABLE_TYPE_{name};")
+            self.add_line("bytes_written += 4;")
+        elif self.table_id >= 0xFD:
+            self.c_allocate(3)
+            self.add_line("buffer[bytes_written] = 0xFD;")
+            self.add_line("bytes_written += 1;")
+            self.add_line("((uint16_t*)(buffer + bytes_written))[0] = TABLE_TYPE_{name};")
+            self.add_line("bytes_written += 2;")
+        else:
+            self.c_allocate(1)
+            self.add_line("((uint8_t*)(buffer + bytes_written))[0] = TABLE_TYPE_{name};")
+            self.add_line("bytes_written += 1;")
+        self.add_line("size_t bitfield_index = bytes_written;")
+        # Allocate room for the bitfield
+        self.c_allocate((len(self.members) - 1) // 8 + 1)
+        self.add_line("bzero(buffer + bytes_written, {bitfield_byte_width});")
+        self.add_line("bytes_written += {bitfield_byte_width};")
         for member in self.members:
             member.generate_c_serialize(self)
         self.add_line("*out_buffer = buffer;")
-        self.add_line("*out_buffer_size = buffer_size;")
+        self.add_line("*out_buffer_size = bytes_written;")
         self.end_block("}}")
         self.skip_line()
 
@@ -1364,26 +1400,36 @@ class Schema:
         self.add_line("buf.extend(uint8({}))".format(expr))
         self.end_block()
 
+    def c_allocate(self, expr: Union[str, int]):
+        self.start_block("while (bytes_written + {} > buffer_size) {{{{".format(expr))
+        self.add_line("buffer_size *= 2;")
+        self.add_line("buffer = realloc(buffer, buffer_size);")
+        self.end_block("}}")
+
     def serialize_c_varint(self, expr: str):
         self.start_block("if ({} > 0xFFFFFFFF) {{{{".format(expr))
+        self.c_allocate(9)
         self.add_line("((uint8_t*)(buffer + bytes_written))[0] = 0xFF;")
         self.add_line("bytes_written += 1;")
-        self.add_line("((uint64_t*)(buffer + bytes_written))[0] = (uint64_t)({});".format(expr))
+        self.add_line("((uint64_t*)(buffer + bytes_written))[0] = htobe64((uint64_t)({}));".format(expr))
         self.add_line("bytes_written += 8;")
         self.end_block("}}")
         self.start_block("else if ({} > 0xFFFF) {{{{".format(expr))
+        self.c_allocate(5)
         self.add_line("((uint8_t*)(buffer + bytes_written))[0] = 0xFE;")
         self.add_line("bytes_written += 1;")
-        self.add_line("((uint32_t*)(buffer + bytes_written))[0] = (uint32_t)({});".format(expr))
+        self.add_line("((uint32_t*)(buffer + bytes_written))[0] = htobe32((uint32_t)({}));".format(expr))
         self.add_line("bytes_written += 4;")
         self.end_block("}}")
         self.start_block("else if ({} >= 0xFD) {{{{".format(expr))
+        self.c_allocate(3)
         self.add_line("((uint8_t*)(buffer + bytes_written))[0] = 0xFD;")
         self.add_line("bytes_written += 1;")
-        self.add_line("((uint16_t*)(buffer + bytes_written))[0] = (uint16_t)({});".format(expr))
+        self.add_line("((uint16_t*)(buffer + bytes_written))[0] = htobe16((uint16_t)({}));".format(expr))
         self.add_line("bytes_written += 2;")
         self.end_block("}}")
         self.start_block("else {{")
+        self.c_allocate(1)
         self.add_line("((uint8_t*)(buffer + bytes_written))[0] = (uint8_t)({});".format(expr))
         self.add_line("bytes_written += 1;")
         self.end_block("}}")
@@ -1412,7 +1458,10 @@ class Schema:
         self.add_line("goto ERROR;")
         self.end_block("}}")
         ctype = "{}int{}_t".format("" if signed else "u", size * 8)
-        converter = "be{}toh".format(size * 8)
+        if size in (2,4,8):
+            converter = "be{}toh".format(size * 8)
+        else:
+            converter = ""
         if declare:
             self.add_line("{} {} = {}(*({}*)(buffer+bytes_read));".format(ctype, name, converter, ctype))
         else:
@@ -1562,6 +1611,7 @@ class Schema:
         self.add_line("#include <stdbool.h>")
         self.add_line("#include <stdlib.h>")
         self.add_line("#include <string.h>")
+        self.add_line("#include <endian.h>")
         self.add_line("#include \"{header_path}\"")
         self.skip_line()
 
