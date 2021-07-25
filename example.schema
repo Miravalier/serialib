@@ -8,7 +8,7 @@ struct Alpha {
 }
 
 table Beta {
-    aardvark: uint32;
+    aardvark: int32;
     buffalo: string;
     chinchilla: Color;
     dinosaur: bool;
@@ -29,4 +29,12 @@ table Delta {
     chemist: [Color:6];
     doctor: [bool:8];
     engineer: [Alpha:10];
+}
+
+table Epsilon {
+    altimeter: Delta;
+}
+
+table Zeta {
+    austin_powers: Epsilon;
 }

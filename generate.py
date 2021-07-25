@@ -314,6 +314,9 @@ class SchemaElement:
     def set_parameter(self, *args, **kwargs):
         self.schema.set_parameter(*args, **kwargs)
 
+    def add_debug(self, *args, **kwargs):
+        self.schema.add_debug(*args, **kwargs)
+
     def add_line(self, *args, **kwargs):
         self.schema.add_line(*args, **kwargs)
 
@@ -343,6 +346,9 @@ class SchemaElement:
 
     def deserialize_c_varint(self, *args, **kwargs):
         self.schema.deserialize_c_varint(*args, **kwargs)
+
+    def deserialize_c_int(self, *args, **kwargs):
+        self.schema.deserialize_c_int(*args, **kwargs)
 
 
 @dataclass
@@ -577,7 +583,120 @@ class StructMember(SchemaElement):
         self.set_parameter("name", self.name)
         self.set_parameter("type_name", self.type.name)
         self.set_parameter("field_id", self.field_id)
-        self.add_line("// TODO deserialize {name}")
+        self.start_block("if (bitfield[{}] & {}) {{{{".format(
+            self.field_id // 8,
+            1 << (7 - self.field_id & 7)
+        ))
+        if self.vector:
+            self.set_parameter("length", self.vector_size if self.vector_size is not None else "vector_size")
+            # Pre for loop
+            if self.vector_size is None:
+                self.deserialize_c_varint("vector_size", declare=True)
+                self.add_line("s->{name} = malloc(vector_size * sizeof(*s->{name}));")
+            self.start_block("for (size_t i = 0; i < {length}; i++) {{")
+            # Body of the for loop
+            if isinstance(self.type, (TableDefinition, StructDefinition)):
+                self.deserialize_c_varint("{name}_size", declare=True)
+                self.start_block("if (bytes_read + {name}_size > buffer_size) {{")
+                self.start_block("for (size_t j; j < i; j++) {{")
+                self.add_line("{type_name}_free(s->{name}[j]);")
+                self.end_block("}}")
+                self.add_debug('printf("Not enough bytes remaining to deserialize nested table: (%zu/%zu)\\n", buffer_size-bytes_read, {name}_size);')
+                self.add_line("goto ERROR;")
+                self.end_block("}}")
+                self.add_line("{type_name}_t *{name} = {type_name}_deserialize(buffer + bytes_read, {name}_size);")
+                self.start_block("if ({name} == NULL) {{")
+                self.start_block("for (size_t j; j < i; j++) {{")
+                self.add_line("{type_name}_free(s->{name}[j]);")
+                self.end_block("}}")
+                self.add_debug('printf("Nested deserialize failed\\n");')
+                self.add_line("goto ERROR;")
+                self.end_block("}}")
+                self.add_line("bytes_read += {name}_size;")
+                self.add_line("s->{name}[i] = {name};")
+            elif isinstance(self.type, EnumDefinition):
+                self.deserialize_c_int("{name}", self.type.size.byte_width, declare=True)
+                self.add_line("s->{name}[i] = ({type_name}_e){name};")
+            elif self.type in INTEGER_PRIMITIVES:
+                self.deserialize_c_int("{name}", self.type.byte_width, declare=True, signed=self.type.signed)
+                self.add_line("s->{name}[i] = {name};")
+            elif self.type is Primitives.String: 
+                self.deserialize_c_varint("{name}_length", declare=True)
+                self.start_block("if (bytes_read + {name}_length > buffer_size) {{")
+                self.add_debug('printf("Not enough bytes remaining to deserialize string: (%zu/%zu)\\n", buffer_size-bytes_read, {name}_length);')
+                self.add_line("goto ERROR;")
+                self.end_block("}}")
+                self.add_line("char *{name} = malloc({name}_length + 1);")
+                self.start_block("if ({name} == NULL) {{")
+                self.add_debug('printf("Malloc failure\\n");')
+                self.add_line("goto ERROR;")
+                self.end_block("}}")
+                self.add_line("memcpy({name}, buffer + bytes_read, {name}_length);")
+                self.add_line("{name}[{name}_length] = '\\0';")
+                self.add_line("bytes_read += {name}_length;")
+                self.add_line("s->{name}[i] = {name};")
+            elif self.type is Primitives.Boolean:
+                self.start_block("if (bytes_read + 1 > buffer_size) {{")
+                self.add_debug('printf("Not enough bytes remaining to deserialize bool\\n");')
+                self.add_line("goto ERROR;")
+                self.end_block("}}")
+                self.add_line("s->{name}[i] = (bool)(buffer[bytes_read + i / 8] & (1 << (7 - i & 7)));")
+            self.end_block("}}")
+
+            # Post for loop
+            if self.vector_size is None:
+                self.add_line("s->{name}_length = vector_size;")
+            self.add_line("s->{name}_present = true;")
+            if self.type is Primitives.Boolean:
+                self.add_line("bytes_read += (({length} - 1) / 8) + 1;")
+        else:
+            if isinstance(self.type, (TableDefinition, StructDefinition)):
+                self.deserialize_c_varint("{name}_size", declare=True)
+                self.start_block("if (bytes_read + {name}_size > buffer_size) {{")
+                self.add_debug('printf("Not enough bytes remaining to deserialize nested table: (%zu/%zu)\\n", buffer_size-bytes_read, {name}_size);')
+                self.add_line("goto ERROR;")
+                self.end_block("}}")
+                self.add_line("{type_name}_t *{name} = {type_name}_deserialize(buffer + bytes_read, {name}_size);")
+                self.start_block("if ({name} == NULL) {{")
+                self.add_debug('printf("Nested deserialize failed\\n");')
+                self.add_line("goto ERROR;")
+                self.end_block("}}")
+                self.add_line("bytes_read += {name}_size;")
+                self.add_line("s->{name} = {name};")
+                self.add_line("s->{name}_present = true;")
+            elif isinstance(self.type, EnumDefinition):
+                self.deserialize_c_int("{name}", self.type.size.byte_width, declare=True)
+                self.add_line("s->{name} = ({type_name}_e){name};")
+                self.add_line("s->{name}_present = true;")
+            elif self.type in INTEGER_PRIMITIVES:
+                self.deserialize_c_int("{name}", self.type.byte_width, declare=True, signed=self.type.signed)
+                self.add_line("s->{name} = {name};")
+                self.add_line("s->{name}_present = true;")
+            elif self.type is Primitives.String: 
+                self.deserialize_c_varint("{name}_length", declare=True)
+                self.start_block("if (bytes_read + {name}_length > buffer_size) {{")
+                self.add_debug('printf("Not enough bytes remaining to deserialize string: (%zu/%zu)\\n", buffer_size-bytes_read, {name}_length);')
+                self.add_line("goto ERROR;")
+                self.end_block("}}")
+                self.add_line("char *{name} = malloc({name}_length + 1);")
+                self.start_block("if ({name} == NULL) {{")
+                self.add_debug('printf("Malloc failed\\n");')
+                self.add_line("goto ERROR;")
+                self.end_block("}}")
+                self.add_line("memcpy({name}, buffer + bytes_read, {name}_length);")
+                self.add_line("{name}[{name}_length] = '\\0';")
+                self.add_line("bytes_read += {name}_length;")
+                self.add_line("s->{name} = {name};")
+                self.add_line("s->{name}_present = true;")
+            elif self.type is Primitives.Boolean:
+                self.start_block("if (bytes_read + 1 > buffer_size) {{")
+                self.add_debug('printf("Not enough bytes remaining to deserialize bool\\n");')
+                self.add_line("goto ERROR;")
+                self.end_block("}}")
+                self.add_line("s->{name} = (bool)buffer[bytes_read];")
+                self.add_line("bytes_read += 1;")
+                self.add_line("s->{name}_present = true;")
+        self.end_block("}}")
         self.pop_parameters()
 
     def generate_c_serialize(self, parent: Union[StructDefinition, TableDefinition]):
@@ -661,6 +780,7 @@ class StructMember(SchemaElement):
                 self.add_line("uint8_t *child_buffer;")
                 self.add_line("size_t child_buffer_size;")
                 self.add_line("{type_name}_serialize(s->{name}, &child_buffer, &child_buffer_size);")
+                self.serialize_c_varint("child_buffer_size")
                 self.c_allocate("child_buffer_size")
                 self.add_line("memcpy(buffer + bytes_written, child_buffer, child_buffer_size);")
                 self.add_line("bytes_written += child_buffer_size;")
@@ -826,6 +946,46 @@ class StructMember(SchemaElement):
         self.end_block("}}")
         self.skip_line()
 
+        self.pop_parameters()
+
+    def generate_print(self, parent: Union[StructDefinition, TableDefinition]):
+        self.push_parameters()
+        self.set_parameter("name", self.name)
+        self.set_parameter("type_name", self.type.name)
+        self.start_block("if (s->{name}_present) {{")
+        if self.vector:
+            self.set_parameter("length", self.vector_size if self.vector_size is not None else "s->{}_length".format(self.name))
+            self.add_line('printf_indent(indent, "{name} [\\n");')
+            self.add_line("indent += 1;")
+            self.start_block("for (size_t i = 0; i < {length}; i++) {{")
+            if isinstance(self.type, (TableDefinition, StructDefinition)):
+                self.add_line("{type_name}_print_indent(s->{name}[i], indent);")
+            elif isinstance(self.type, EnumDefinition):
+                self.add_line('printf_indent(indent, "%u\\n", s->{name}[i]);')
+            elif self.type in INTEGER_PRIMITIVES:
+                self.add_line('printf_indent(indent, "%x\\n", s->{name}[i]);')
+            elif self.type is Primitives.String: 
+                self.add_line('printf_indent(indent, "\\"%s\\"\\n", s->{name}[i]);')
+            elif self.type is Primitives.Boolean:
+                self.add_line('printf_indent(indent, "%s\\n", (s->{name}[i] ? "True" : "False"));')
+            self.end_block("}}")
+            self.add_line("indent -= 1;")
+            self.add_line('printf_indent(indent, "]\\n");')
+        else:
+            if isinstance(self.type, (TableDefinition, StructDefinition)):
+                self.add_line("{type_name}_print_indent(s->{name}, indent);")
+            elif isinstance(self.type, EnumDefinition):
+                self.add_line('printf_indent(indent, "{name} = %u\\n", s->{name});')
+            elif self.type in INTEGER_PRIMITIVES:
+                self.add_line('printf_indent(indent, "{name} = %x\\n", s->{name});')
+            elif self.type is Primitives.String: 
+                self.add_line('printf_indent(indent, "{name} = \\"%s\\"\\n", s->{name});')
+            elif self.type is Primitives.Boolean:
+                self.add_line('printf_indent(indent, "{name} = %s\\n", (s->{name} ? "True" : "False"));')
+        self.end_block("}}")
+        self.start_block("else {{")
+        self.add_line('printf_indent(indent, "{name} not present.\\n");')
+        self.end_block("}}")
         self.pop_parameters()
 
     def generate_python_serialize(self):
@@ -1037,6 +1197,9 @@ class StructDefinition(SchemaElement):
         self.add_line("bool {name}_verify(const uint8_t *buffer, size_t buffer_size);")
         self.skip_line()
 
+        self.add_line("void {name}_print({name}_t *s);")
+        self.skip_line()
+
         for member in self.members:
             member.generate_signatures(self)
 
@@ -1122,8 +1285,11 @@ class StructDefinition(SchemaElement):
         self.add_line("size_t bytes_read = 0;")
         self.deserialize_c_varint("table_id", declare=True)
         self.start_block("if (table_id != {table_id}) {{")
+        self.add_debug('printf("Table ID in buffer doesn\'t match: %zu instead of %i\\n", table_id, {table_id});')
         self.add_line("goto ERROR;")
         self.end_block("}}")
+        self.add_line("const uint8_t *bitfield = buffer + bytes_read;")
+        self.add_line("bytes_read += {bitfield_byte_width};")
         self.skip_line()
         for member in self.members:
             member.generate_c_deserialize(self)
@@ -1153,6 +1319,23 @@ class StructDefinition(SchemaElement):
         # Get/Sets
         for member in self.members:
             member.generate_get_set(self)
+
+        # Static Print
+        self.start_block("static void {name}_print_indent({name}_t *s, size_t indent) {{")
+        self.add_line('printf_indent(indent, "{name} {{\\n");')
+        self.add_line("indent += 1;")
+        for member in self.members:
+            member.generate_print(self)
+        self.add_line("indent -= 1;")
+        self.add_line('printf_indent(indent, "}}\\n");')
+        self.end_block("}}")
+        self.skip_line()
+
+        # Wrapper Print
+        self.start_block("void {name}_print({name}_t *s) {{")
+        self.add_line("{name}_print_indent(s, 0);")
+        self.end_block("}}")
+        
 
     def generate_python(self):
         """
@@ -1342,12 +1525,13 @@ class EnumDefinition(SchemaElement):
 class Schema:
     definitions: Dict[str, Union[EnumDefinition, StructDefinition, TableDefinition]]
     name: str = "ANONYMOUS_SCHEMA"
-    next_table_id: int = 0
+    next_table_id: int = 1
     indentation: str = '    '
     indentation_level: int = 0
     current_output: List[str] = field(default_factory=list)
     format_parameters: Dict[str, str] = field(default_factory=dict)
     format_parameters_stack: List[Dict[str, str]] = field(default_factory=list)
+    debug: bool = False
 
     def add_c_comment(self, comment="", **kwargs):
         self.add_comment(comment, opener="/**", line_start=" *", closer=" */", **kwargs)
@@ -1500,6 +1684,10 @@ class Schema:
     def pop_parameters(self):
         self.format_parameters = self.format_parameters_stack.pop()
 
+    def add_debug(self, code=None):
+        if self.debug:
+            self.add_line(code)
+
     def add_line(self, code=None):
         if code:
             self.current_output.append(
@@ -1612,8 +1800,33 @@ class Schema:
         self.add_line("#include <stdlib.h>")
         self.add_line("#include <string.h>")
         self.add_line("#include <endian.h>")
+        self.add_line("#include <stdarg.h>")
+        self.add_line("#include <stdio.h>")
         self.add_line("#include \"{header_path}\"")
         self.skip_line()
+
+        self.start_block("static void printf_indent(size_t indent, const char *fmt, ...) {{")
+        self.start_block("for (size_t i = 0; i < indent; i++) {{")
+        self.add_line('printf("  ");')
+        self.end_block("}}")
+        self.add_line("va_list va_args;")
+        self.add_line("va_start(va_args, fmt);")
+        self.add_line("vprintf(fmt, va_args);")
+        self.add_line("va_end(va_args);")
+        self.end_block("}}")
+
+        self.set_parameter("NUM_TABLE_IDS", self.next_table_id)
+        self.start_block("TableType_e determine_table_type(const uint8_t *buffer, size_t buffer_size) {{")
+        self.add_line("size_t bytes_read = 0;")
+        self.deserialize_c_varint("table_id", declare=True)
+        self.start_block("if (table_id >= {NUM_TABLE_IDS}) {{")
+        self.add_line("goto ERROR;")
+        self.end_block("}}")
+        self.add_line("return (TableType_e)table_id;")
+        self.start_block("ERROR: {{")
+        self.add_line("return TABLE_TYPE_INVALID;")
+        self.end_block("}}")
+        self.end_block("}}")
 
         for definition in self.structs:
             definition.generate_c_source()
