@@ -640,7 +640,7 @@ class StructMember(SchemaElement):
                 self.add_debug('printf("Not enough bytes remaining to deserialize bool\\n");')
                 self.add_line("goto ERROR;")
                 self.end_block("}}")
-                self.add_line("s->{name}[i] = (bool)(buffer[bytes_read + i / 8] & (1 << (7 - i & 7)));")
+                self.add_line("s->{name}[i] = (bool)(buffer[bytes_read + i / 8] & (1 << (7 - (i & 7))));")
             self.end_block("}}")
 
             # Post for loop
@@ -1018,7 +1018,7 @@ class StructMember(SchemaElement):
                 self.add_line("buf.extend(self.{field}[i].encode('utf-8'))")
             elif self.type is Primitives.Boolean:
                 self.start_block("if self.{field}[i]:")
-                self.add_line("data[i//8] |= 1 << (7 - i & 7)")
+                self.add_line("data[i//8] |= 1 << (7 - (i & 7))")
                 self.end_block()
             elif self.type in INTEGER_PRIMITIVES:
                 self.set_parameter("bit_width", self.type.byte_width*8)
@@ -1273,6 +1273,7 @@ class StructDefinition(SchemaElement):
             member.generate_c_serialize(self)
         self.add_line("*out_buffer = buffer;")
         self.add_line("*out_buffer_size = bytes_written;")
+        self.add_line("return true;")
         self.end_block("}}")
         self.skip_line()
 
