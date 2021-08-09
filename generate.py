@@ -1086,26 +1086,24 @@ class StructMember(SchemaElement):
                 self.add_line("buf_index += child_length")
                 self.add_line("values.append({type_name}.deserialize(child_buf))")
             elif isinstance(self.type, EnumDefinition):
-                self.set_parameter("bit_width", self.type.size.byte_width*8)
                 self.set_parameter("byte_width", self.type.size.byte_width)
-                self.add_line("values.append({type_name}(uint{bit_width}(buf[buf_index:buf_index+{byte_width}])))")
+                self.add_line("values.append({type_name}(unsigned_int(buf[buf_index:buf_index+{byte_width}])))")
                 self.add_line("buf_index += {byte_width}")
             elif self.type is Primitives.String:
                 self.deserialize_py_varint("string_length")
                 self.add_line("values.append(buf[buf_index:buf_index+string_length].decode('utf-8'))")
                 self.add_line("buf_index += string_length")
             elif self.type is Primitives.Boolean:
-                self.start_block("if data[i//8] & (1 << (7 - (i & 7)))")
+                self.start_block("if data[i//8] & (1 << (7 - (i & 7))):")
                 self.add_line("values.append(True)")
                 self.end_block()
                 self.start_block("else:")
                 self.add_line("values.append(False)")
                 self.end_block()
             elif self.type in INTEGER_PRIMITIVES:
-                self.set_parameter("bit_width", self.type.byte_width*8)
                 self.set_parameter("byte_width", self.type.byte_width)
-                self.set_parameter("int_type", "int" if self.type.signed else "uint")
-                self.add_line("values.append({int_type}{bit_width}(buf[buf_index:buf_index+{byte_width}]))")
+                self.set_parameter("int_type", "signed_int" if self.type.signed else "unsigned_int")
+                self.add_line("values.append({int_type}(buf[buf_index:buf_index+{byte_width}]))")
                 self.add_line("buf_index += {byte_width}")
             else:
                 raise TypeError("Unrecognized struct member type")
@@ -1120,9 +1118,8 @@ class StructMember(SchemaElement):
                 self.add_line("buf_index += child_length")
                 self.add_line("table.{field} = {type_name}.deserialize(child_buf)")
             elif isinstance(self.type, EnumDefinition):
-                self.set_parameter("bit_width", self.type.size.byte_width*8)
                 self.set_parameter("byte_width", self.type.size.byte_width)
-                self.add_line("table.{field} = {type_name}(uint{bit_width}(buf[buf_index:buf_index+{byte_width}]))")
+                self.add_line("table.{field} = {type_name}(unsigned_int(buf[buf_index:buf_index+{byte_width}]))")
                 self.add_line("buf_index += {byte_width}")
             elif self.type is Primitives.String:
                 self.deserialize_py_varint("string_length")
@@ -1132,10 +1129,9 @@ class StructMember(SchemaElement):
                 self.add_line("table.{field} = (buf[buf_index] != 0)")
                 self.add_line("buf_index += 1")
             elif self.type in INTEGER_PRIMITIVES:
-                self.set_parameter("bit_width", self.type.byte_width*8)
                 self.set_parameter("byte_width", self.type.byte_width)
-                self.set_parameter("int_type", "int" if self.type.signed else "uint")
-                self.add_line("table.{field} = {int_type}{bit_width}(buf[buf_index:buf_index+{byte_width}])")
+                self.set_parameter("int_type", "signed_int" if self.type.signed else "unsigned_int")
+                self.add_line("table.{field} = {int_type}(buf[buf_index:buf_index+{byte_width}])")
                 self.add_line("buf_index += {byte_width}")
             else:
                 raise TypeError("Unrecognized struct member type")
@@ -1546,6 +1542,8 @@ class StructDefinition(SchemaElement):
         self.end_block()
         self.add_line("table = cls()")
         self.add_line("bitfield_index = buf_index")
+        self.set_parameter("bitfield_byte_width", (len(self.members) - 1) // 8 + 1)
+        self.add_line("buf_index += {bitfield_byte_width}")
         for member in self.members:
             self.set_parameter("field", member.name)
             self.set_parameter("type_name", member.type.name)
