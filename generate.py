@@ -8,11 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Union
 
-from prettyprinter import install_extras, pprint
 from sly import Lexer, Parser
-
-# Pretty printer dataclasses support
-install_extras(include=['dataclasses'], warn_on_error=True)
 
 
 def join_iterate(seq):
