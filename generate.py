@@ -594,7 +594,7 @@ class StructMember(SchemaElement):
             if isinstance(self.type, (TableDefinition, StructDefinition)):
                 self.deserialize_c_varint("{name}_size", declare=True)
                 self.start_block("if (bytes_read + {name}_size > buffer_size) {{")
-                self.start_block("for (size_t j; j < i; j++) {{")
+                self.start_block("for (size_t j = 0; j < i; j++) {{")
                 self.add_line("{type_name}_free(s->{name}[j]);")
                 self.end_block("}}")
                 self.add_debug('printf("Not enough bytes remaining to deserialize nested table: (%zu/%zu)\\n", buffer_size-bytes_read, {name}_size);')
@@ -602,7 +602,7 @@ class StructMember(SchemaElement):
                 self.end_block("}}")
                 self.add_line("{type_name}_t *{name} = {type_name}_deserialize(buffer + bytes_read, {name}_size);")
                 self.start_block("if ({name} == NULL) {{")
-                self.start_block("for (size_t j; j < i; j++) {{")
+                self.start_block("for (size_t j = 0; j < i; j++) {{")
                 self.add_line("{type_name}_free(s->{name}[j]);")
                 self.end_block("}}")
                 self.add_debug('printf("Nested deserialize failed\\n");')
@@ -749,7 +749,7 @@ class StructMember(SchemaElement):
                 self.add_line("bytes_written += child_buffer_size;")
                 self.add_line("free(child_buffer);")
             elif isinstance(self.type, EnumDefinition):
-                self.add_line("(({c_type}*)(buffer + bytes_written))[0] = {converter}(({c_type})s->{name}[i]);")
+                self.add_line("*({c_type}*)(buffer + bytes_written) = {converter}(({c_type})s->{name}[i]);")
                 self.add_line("bytes_written += {byte_width};")
             elif self.type in INTEGER_PRIMITIVES:
                 self.add_line("(({c_type}*)(buffer + bytes_written))[0] = {converter}(({c_type})s->{name}[i]);")
@@ -1338,13 +1338,14 @@ class StructDefinition(SchemaElement):
             self.c_allocate(1)
             self.add_line("((uint8_t*)(buffer + bytes_written))[0] = TABLE_TYPE_{name};")
             self.add_line("bytes_written += 1;")
-        self.add_line("size_t bitfield_index = bytes_written;")
-        # Allocate room for the bitfield
-        self.c_allocate((len(self.members) - 1) // 8 + 1)
-        self.add_line("bzero(buffer + bytes_written, {bitfield_byte_width});")
-        self.add_line("bytes_written += {bitfield_byte_width};")
-        for member in self.members:
-            member.generate_c_serialize(self)
+        if len(self.members) > 0:
+            self.add_line("size_t bitfield_index = bytes_written;")
+            # Allocate room for the bitfield
+            self.c_allocate((len(self.members) - 1) // 8 + 1)
+            self.add_line("bzero(buffer + bytes_written, {bitfield_byte_width});")
+            self.add_line("bytes_written += {bitfield_byte_width};")
+            for member in self.members:
+                member.generate_c_serialize(self)
         self.add_line("*out_buffer = buffer;")
         self.add_line("*out_buffer_size = bytes_written;")
         self.add_line("return true;")
@@ -1363,11 +1364,12 @@ class StructDefinition(SchemaElement):
         self.add_debug('printf("Table ID in buffer doesn\'t match: %zu instead of %i\\n", table_id, {table_id});')
         self.add_line("goto ERROR;")
         self.end_block("}}")
-        self.add_line("const uint8_t *bitfield = buffer + bytes_read;")
-        self.add_line("bytes_read += {bitfield_byte_width};")
-        self.skip_line()
-        for member in self.members:
-            member.generate_c_deserialize(self)
+        if len(self.members) > 0:
+            self.add_line("const uint8_t *bitfield = buffer + bytes_read;")
+            self.add_line("bytes_read += {bitfield_byte_width};")
+            self.skip_line()
+            for member in self.members:
+                member.generate_c_deserialize(self)
         self.add_line("return s;")
         self.skip_line()
         self.start_block("ERROR: {{")
