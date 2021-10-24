@@ -1506,16 +1506,18 @@ class StructDefinition(SchemaElement):
         self.start_block("if type(self) != type(other):")
         self.add_line("return False")
         self.end_block()
-        self.start_block("try:")
-        for member in self.members:
-            self.set_parameter("field", member.name)
-            self.start_block("if self._{field} != other._{field}:")
+        if self.members:
+            self.start_block("try:")
+            for member in self.members:
+                self.set_parameter("field", member.name)
+                self.start_block("if self._{field} != other._{field}:")
+                self.add_line("return False")
+                self.end_block()
+            self.end_block()
+            self.start_block("except AttributeError:")
             self.add_line("return False")
             self.end_block()
-        self.end_block()
-        self.start_block("except AttributeError:")
-        self.add_line("return False")
-        self.end_block()
+        
         self.add_line("return True")
         self.end_block()
         self.skip_line()
